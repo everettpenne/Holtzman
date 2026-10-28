@@ -37,7 +37,9 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val ref = IxBurst.sharpest(planes)
             val black = blackLevels(frames[ref].result, characteristics)
             Log.i("HoltzmanBurst", "reference $ref, black ${black.toList()}, iso ${frames[ref].result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY)}")
-            val params = com.everettpenne.ix.mergeParamsForIso(frames[ref].result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 860) { Log.i("HoltzmanBurst", it) }
+            val baseParams = com.everettpenne.ix.mergeParamsForIso(frames[ref].result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 860) { Log.i("HoltzmanBurst", it) }
+            val params = if (DebugFlags.on("oldweights")) com.everettpenne.ix.IxMergeParams(baseParams.shot, baseParams.read, 0f, 3f, log = baseParams.log) else baseParams
+            if (DebugFlags.raw.isNotEmpty()) Log.i("HoltzmanBurst", "debug switches: ${DebugFlags.raw}")
             // one GL context for the merge and the render; if the device has none, both stages run on the CPU
             val gl = runCatching { GlContext() }.onFailure { Log.w("HoltzmanBurst", "no GPU context, using the CPU: $it") }.getOrNull()
             try {
@@ -78,7 +80,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
     private fun mergeBest(gl: GlContext?, frames: List<BurstFrame>, planes: List<IxPlane>, ref: Int, black: IntArray, params: com.everettpenne.ix.IxMergeParams): IxMerged {
         if (gl != null) {
             try {
-                val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU) 0f else RAW_DENOISE)
+                val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU || DebugFlags.on("noraw")) 0f else RAW_DENOISE)
                 if (VERIFY_GPU) {
                     val t = System.nanoTime()
                     val cpu = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(params.shot, params.read, params.fullTrust, params.noTrust, params.tileCells, params.searchCells))
@@ -91,6 +93,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
         }
         val merged = IxBurst.merge(planes, ref, black, params)
         // the GPU did the spatial denoise inside its merge; on the CPU path it is done here, on the merged mosaic
+        if (DebugFlags.on("noraw")) return merged
         val smooth = com.everettpenne.ix.IxDenoise.mosaic(merged.samples, merged.width, merged.height, black, params.shot, params.read * params.read, merged.meanFrames, RAW_DENOISE)
         return IxMerged(smooth, merged.width, merged.height, merged.meanFrames)
     }

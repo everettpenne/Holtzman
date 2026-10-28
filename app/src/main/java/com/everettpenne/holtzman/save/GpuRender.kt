@@ -88,7 +88,10 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 6, buffers[6])
             val gridW = (width + 15) / 16; val gridH = (height + 15) / 16
             val useLtm = s.look.localTone > 0f && localToneAvailable
-            if (useLtm) { allocate(buffers[7], gridW * gridH * 4); allocate(buffers[8], gridW * gridH * 4); GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 8, buffers[7]); GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 9, buffers[8]) }
+            // The tone shader declares the tone-map base at binding 9 whether or not it is used. Left unbound when local tone mapping is off, this phone's GPU
+            // drew an all-black picture (the emulator did not mind), so a small dummy always stands there.
+            if (useLtm) { allocate(buffers[7], gridW * gridH * 4); allocate(buffers[8], gridW * gridH * 4) } else { allocate(buffers[7], 16); allocate(buffers[8], 16) }
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 8, buffers[7]); GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 9, buffers[8])
             val gx = (width + 15) / 16; val gy = (height + 15) / 16
 
             GLES31.glUseProgram(linearProgram)
@@ -125,6 +128,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
 
             GLES31.glUseProgram(toneProgram)
             GLES31.glUniform1i(gl.loc(toneProgram, "hasLtm"), if (useLtm) 1 else 0)
+            GLES31.glUniform1i(gl.loc(toneProgram, "useClipRule"), if (DebugFlags.on("noclip")) 0 else 1)
             GLES31.glUniform1f(gl.loc(toneProgram, "ltmC"), 1f - 0.5f * s.look.localTone)
             GLES31.glUniform1f(gl.loc(toneProgram, "ltmMid"), (Math.log(LTM_KEY.toDouble()) / Math.log(2.0)).toFloat())
             gl.setInts(toneProgram, "grid", gridW, gridH)
@@ -591,7 +595,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 9) readonly buffer Base { float base[]; };
             uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform mat3 ccm; uniform float exposure;
             uniform float blackPoint; uniform float contrast; uniform float saturation; uniform float curveX[12]; uniform float curveY[12]; uniform int hasCurve;
-            uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm;
+            uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm; uniform int useClipRule;
             const float EPS = 0.02;
             $CHANNEL
             float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
@@ -631,7 +635,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 }
                 vec3 w = vec3(max(r, 0.0) * wb.x, max(gr, 0.0) * wb.y, max(b, 0.0) * wb.z);
                 // clipped highlights (see IxRender): where the raw signal is at its limit the colour is unknown, so ease it toward white, not magenta
-                float clipMix = smoothstep(0.92, 1.0, max(r, max(gr, b)));
+                float clipMix = useClipRule == 1 ? smoothstep(0.92, 1.0, max(r, max(gr, b))) : 0.0;
                 w = mix(w, vec3(max(w.x, max(w.y, w.z))), clipMix);
                 vec3 o = (ccm * w) * exposure;
                 if (hasLtm == 1) {

@@ -20,6 +20,15 @@ object BurstRender {
         autoTone = 1f,
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)
         curve = floatArrayOf(0f, 4f, 13f, 34f, 55f, 75f, 106f, 132f, 156f, 180f, 203f, 245f).map { it / 255f }.toFloatArray())
+    /** [LOOK] with any stages the debug switches turned off. */
+    fun look(): com.everettpenne.ix.IxLook {
+        if (DebugFlags.raw.isEmpty()) return LOOK
+        val l = LOOK
+        return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, l.sharpen, l.sharpenCore, l.curve,
+            denoise = if (DebugFlags.on("nofinish")) 0f else l.denoise, detail = l.detail, detailCore = l.detailCore, clarity = l.clarity, chromaSmoothing = l.chromaSmoothing,
+            localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone)
+    }
+
     /** What the average of the picture is brought to, linear: lower than middle grey, as the Pixel app's pictures sit. */
     const val EXPOSURE_TARGET = 0.12f
 
@@ -41,7 +50,7 @@ object BurstRender {
             for (r in 0 until m.rowCount) for (c in 0 until m.columnCount) for (k in 0 until 4) gains[(r * m.columnCount + c) * 4 + k] = m.getGainFactor(k, c, r)
             IxShadingMap(m.columnCount, m.rowCount, gains)
         }
-        return IxRenderSettings(cfa, black, white, wb, ccm, shading, look = LOOK)
+        return IxRenderSettings(cfa, black, white, wb, ccm, shading, look = look())
     }
 
     /** Renders the whole mosaic to a bitmap, a band of rows at a time. */

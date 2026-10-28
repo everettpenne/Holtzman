@@ -13,8 +13,14 @@ import com.everettpenne.holtzman.ui.ShutterKeys
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        intent?.getStringExtra("dbg")?.let { com.everettpenne.holtzman.save.DebugFlags.raw = it }
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         setContent { HoltzmanRoot() }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        com.everettpenne.holtzman.save.DebugFlags.raw = intent.getStringExtra("dbg") ?: ""
     }
 
     /** The volume keys take the picture, as on a camera; the key's repeat while held is ignored so one press is one shot. */
