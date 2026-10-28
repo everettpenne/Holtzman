@@ -15,8 +15,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.TimeZone
 
-/** What a burst produced: the merged DNG, the unmerged reference frame as a DNG (for judging the merge), and how long and how well it went. */
-class BurstOutcome(val merged: Uri, val reference: Uri, val mergedJpeg: Uri, val referenceJpeg: Uri, val millis: Long, val meanFrames: Float, val frames: Int)
+/**
+ * What a burst produced: the merged picture as a JPEG (always), as a DNG too when asked, and, for judging the merge, the unmerged reference frame
+ * rendered the same way, as a JPEG and a DNG.
+ */
+class BurstOutcome(val jpeg: Uri, val dng: Uri?, val referenceJpeg: Uri?, val referenceDng: Uri?, val millis: Long, val meanFrames: Float, val frames: Int)
 
 /**
  * Stage 1 and 2 of the pipeline, end to end: take the burst's RAW frames, pick the sharpest as the reference, align and merge the rest in the RAW
@@ -24,7 +27,7 @@ class BurstOutcome(val merged: Uri, val reference: Uri, val mergedJpeg: Uri, val
  * frame on its own.
  */
 class BurstProcessor(private val saver: PhotoSaver) {
-    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long): BurstOutcome {
+    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false): BurstOutcome {
         val started = System.nanoTime()
         run {
             val planes = frames.map { f ->
@@ -41,28 +44,27 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val merged: IxMerged = mergeBest(gl, frames, planes, ref, black, params)
             Log.i("HoltzmanBurst", "merge done in ${(System.nanoTime() - started) / 1_000_000} ms")
             val base = captureBaseName(timeMillis, TimeZone.getDefault().getOffset(timeMillis).toLong())
-            val mergedUri = saver.writeDng("${base}_burst.dng", timeMillis) { out -> writeMerged(out, characteristics, frames[ref], merged, orientation) }
-            val refUri = saver.writeDng("${base}_ref.dng", timeMillis) { out ->
+            val mergedDng = if (saveDng) saver.writeDng("$base.dng", timeMillis) { out -> writeMerged(out, characteristics, frames[ref], merged, orientation) } else null
+            val refDng = if (saveReference) saver.writeDng("${base}_ref.dng", timeMillis) { out ->
                 frames[ref].pixels.rewind()
                 DngCreator(characteristics, frames[ref].result).use {
                     it.setOrientation(PhotoSaver.exifOrientation(orientation))
                     it.writeByteBuffer(out, Size(frames[ref].width, frames[ref].height), frames[ref].pixels, 0)
                 }
-            }
-            // stage 3: render both to JPEG with the same settings and the same exposure, so the two can be compared fairly
+            } else null
+            // stage 3: render the merged picture (and, when asked, the unmerged reference frame the same way, so the two can be compared fairly)
             val settings = BurstRender.settings(frames[ref].result, characteristics, black)
-            frames[ref].pixels.rewind()
-            val refRaw = ShortArray(merged.width * merged.height).also { frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) }
-            val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
+            val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
+            val refRaw = if (saveReference) ShortArray(merged.width * merged.height).also { frames[ref].pixels.rewind(); frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) } else null
             val tRender = System.nanoTime()
             val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
             val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
-            val mergedJpeg = saver.writeJpeg("${base}_burst.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
-            val refJpeg = saver.writeJpeg("${base}_ref.jpg", timeMillis, refBitmap, 95, orientation); refBitmap.recycle()
-            Log.i("HoltzmanBurst", "rendered two pictures in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")
+            val mergedJpeg = saver.writeJpeg("$base.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
+            val refJpeg = refBitmap?.let { bmp -> saver.writeJpeg("${base}_ref.jpg", timeMillis, bmp, 95, orientation).also { bmp.recycle() } }
+            Log.i("HoltzmanBurst", "rendered ${if (refRaw != null) "two pictures" else "the picture"} in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")
             val ms = (System.nanoTime() - started) / 1_000_000
             Log.i("HoltzmanBurst", "merged ${frames.size} frames in $ms ms, mean frames per cell ${merged.meanFrames}, reference $ref")
-            return BurstOutcome(mergedUri, refUri, mergedJpeg, refJpeg, ms, merged.meanFrames, frames.size)
+            return BurstOutcome(mergedJpeg, mergedDng, refJpeg, refDng, ms, merged.meanFrames, frames.size)
             } finally { gl?.close() }
         }
     }
@@ -107,14 +109,14 @@ class BurstProcessor(private val saver: PhotoSaver) {
      * Renders the merged and reference mosaics on the GPU, and checks the first against the CPU renderer on one band of rows (the log says how far
      * apart they are); if the GPU cannot do it on this device, both come from the CPU renderer.
      */
-    private fun renderBoth(gl: GlContext?, merged: ShortArray, ref: ShortArray, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float, face: IntArray?): Pair<android.graphics.Bitmap, android.graphics.Bitmap> {
+    private fun renderBoth(gl: GlContext?, merged: ShortArray, ref: ShortArray?, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float, face: IntArray?): Pair<android.graphics.Bitmap, android.graphics.Bitmap?> {
         try {
             GpuRender(gl ?: error("no GPU context"), ownsContext = false).use { gpu ->
                 val t0 = System.nanoTime()
                 val a = gpu.toBitmap(merged, w, h, s, exposure, face)
                 val t1 = System.nanoTime()
-                val b = gpu.toBitmap(ref, w, h, s, exposure, face)
-                Log.i("HoltzmanBurst", "GPU render: merged ${(t1 - t0) / 1_000_000} ms, reference ${(System.nanoTime() - t1) / 1_000_000} ms")
+                val b = ref?.let { gpu.toBitmap(it, w, h, s, exposure, face) }
+                Log.i("HoltzmanBurst", "GPU render: merged ${(t1 - t0) / 1_000_000} ms${if (ref != null) ", reference ${(System.nanoTime() - t1) / 1_000_000} ms" else ""}")
                 if (VERIFY_GPU) {
                     // check one band against the CPU renderer: rounding may differ by a level, anything more is a bug
                     val y0 = (h / 2) and 1.inv(); val rows = 32
@@ -128,7 +130,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
             }
         } catch (t: Throwable) {
             Log.w("HoltzmanBurst", "GPU render unavailable, using the CPU: $t")
-            return BurstRender.toBitmap(merged, w, h, s, exposure) to BurstRender.toBitmap(ref, w, h, s, exposure)
+            return BurstRender.toBitmap(merged, w, h, s, exposure) to ref?.let { BurstRender.toBitmap(it, w, h, s, exposure) }
         }
     }
 

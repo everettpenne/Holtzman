@@ -90,7 +90,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
     var hdr by remember { mutableStateOf(false) }
-    var burst by remember { mutableStateOf(false) }
+    // the computational burst is the normal way to take a photo; the chip turns it off for a quick single frame
+    var burst by remember { mutableStateOf(true) }
     var dataset by remember { mutableStateOf(false) }
     var showDataset by remember { mutableStateOf(false) }
     var datasetKind by remember { mutableStateOf(com.everettpenne.holtzman.save.DatasetKind.HANDHELD) }
@@ -178,10 +179,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         controller.focusForShot { controller.captureBurst(onResult = { frames ->
             scope.launch(Dispatchers.Default) {
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis()) }
+                val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis(), saveDng = raw, saveReference = compare) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    outcome.onSuccess { status = "Merged ${it.frames} frames in %.1f s".format(java.util.Locale.ROOT, it.millis / 1000f) }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
+                    outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } }) }
@@ -225,7 +227,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
         if (dataset) { shootDataset(); return }
-        if (burst) { shootBurst(); return }
+        if (burst && controller.rawAvailable) { shootBurst(); return }
         busy = true
         if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
@@ -304,15 +306,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         // top: the probe, and what the camera is saying
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
-            if (burst) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Calibrate noise") { calibrateNoise() } }
+            if (dataset) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Calibrate noise") { calibrateNoise() } }
             if (dataset) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Dataset options") { showDataset = true } }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
-                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; raw = false; dataset = false } }
+                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; dataset = false } }
                 if (!videoMode && !night) Chip("DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
                 if (!videoMode && !night && !burst && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
-                if (!videoMode && !night && !burst && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+                if (!videoMode && !night && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }
         // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture

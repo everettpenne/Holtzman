@@ -47,6 +47,11 @@ fun ProbeSheet(onDismiss: () -> Unit, onCompare: () -> Unit) {
                 saved = if (uri != null && runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) } }.isSuccess) "Saved to Downloads" else "Couldn't save the report"
             }, Modifier.fillMaxWidth(), prominent = true)
             GlassButton("Take a comparison pair", onCompare, Modifier.fillMaxWidth(), prominent = false)
+            var compare by remember { mutableStateOf(context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)) }
+            GlassButton("Burst also saves the unmerged frame: ${if (compare) "on" else "off"}", {
+                compare = !compare
+                context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).edit().putBoolean("compare", compare).apply()
+            }, Modifier.fillMaxWidth(), prominent = false)
             GlassButton("Test the Tensor accelerators", {
                 spike = "Running…"
                 scope.launch(kotlinx.coroutines.Dispatchers.Default) { val t = AcceleratorSpike.text(AcceleratorSpike.run(context)); android.util.Log.i("HoltzmanSpike", t); spike = t }
