@@ -323,3 +323,6 @@ Inspected on the phone: nothing was failing. Between 14:10 and 14:16 the app had
 - Learned denoiser (int8, NNAPI → Edge TPU) is the default; minified release build on the Pixel 10a logs "learned denoise on the TPU in 638 ms", ~2.2 s per 6-frame shot, no "unavailable" warnings.
 - UI redesign: settings sheet, camera report sheet, restructured dataset sheet, icon top bar.
 - arm64-v8a only; `noCompress tflite` so the interpreter can map the model.
+
+## Dataset location (2026-10-28)
+The dataset (63 scenes, 21 GB with the aligned and converted files) lives in `~/Code/holtzman-dataset`, outside the repo and never on GitHub (it has the home and people in it). `tools/denoiser/data.py` reads it by default; override with `HOLTZMAN_DS`. Nine scenes shot after the first training run (15:03-15:31, handheld, clean, ladder) have not been trained on yet.

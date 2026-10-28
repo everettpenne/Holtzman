@@ -7,7 +7,7 @@ bursts use the frames aligned to their reference (ix:alignDump); the ISO ladder 
 import json, os, glob
 import numpy as np
 
-ROOT = os.environ.get('HOLTZMAN_DS', '/tmp/ds')
+ROOT = os.environ.get('HOLTZMAN_DS', os.path.expanduser('~/Code/holtzman-dataset'))
 P = 64                      # patch size in cells (a cell = a 2x2 group of samples): 128 x 128 sensor pixels
 POS = ((0, 0), (0, 1), (1, 0), (1, 1))   # plane k holds mosaic samples at (row, column) offsets POS[k]; the Pixel 10a's pattern is GRBG
 
