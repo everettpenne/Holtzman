@@ -91,6 +91,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var night by remember { mutableStateOf(false) }
     var hdr by remember { mutableStateOf(false) }
     var burst by remember { mutableStateOf(false) }
+    var dataset by remember { mutableStateOf(false) }
+    var showDataset by remember { mutableStateOf(false) }
+    var datasetKind by remember { mutableStateOf(com.everettpenne.holtzman.save.DatasetKind.HANDHELD) }
+    var datasetTags by remember { mutableStateOf(setOf<String>()) }
+    var datasetNote by remember { mutableStateOf("") }
     var videoMode by remember { mutableStateOf(startInVideo) }
     var recording by remember { mutableStateOf(false) }
     var elapsed by remember { mutableIntStateOf(0) }
@@ -138,7 +143,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, hdr, burst, resumed, previewShape, nightExtension, videoMode, quality) {
+    LaunchedEffect(surfaceReady, lens, raw, hdr, burst, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
         if (surfaceReady == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { shape ->
             val holder = surfaceReady ?: return@let
@@ -149,7 +154,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             }
         }
         val surface = surfaceReady?.surface ?: run { controller.close(); return@LaunchedEffect }
-        controller.open(lens, surface, raw || hdr || burst, if (videoMode) null else nightExtension, if (videoMode) quality else null, burst, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw || hdr || burst || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, burst || dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -200,8 +205,26 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         next(0)
     }
 
+    fun shootDataset() {
+        if (busy) return
+        busy = true; status = "Starting…"
+        val chars = controller.characteristics
+        val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
+        val kind = datasetKind; val tags = datasetTags; val note = datasetNote
+        scope.launch(Dispatchers.Default) {
+            val outcome = runCatching {
+                com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).run(kind, tags, note, orientation) { line -> scope.launch(Dispatchers.Main) { status = line } }
+            }
+            withContext(Dispatchers.Main) {
+                busy = false
+                outcome.onSuccess { status = "Saved ${it.removePrefix("scene_")}" }.onFailure { status = "Dataset capture failed: ${it.message}"; android.util.Log.w("HoltzmanDataset", it) }
+            }
+        }
+    }
+
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
+        if (dataset) { shootDataset(); return }
         if (burst) { shootBurst(); return }
         busy = true
         if (night) status = "Hold still…"
@@ -282,12 +305,14 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
             if (burst) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Calibrate noise") { calibrateNoise() } }
+            if (dataset) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Dataset options") { showDataset = true } }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
-                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; raw = false } }
-                if (!videoMode && !night && !burst) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
-                if (!videoMode && !night && !burst && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; raw = false; dataset = false } }
+                if (!videoMode && !night) Chip("DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
+                if (!videoMode && !night && !burst && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
+                if (!videoMode && !night && !burst && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }
         // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture
@@ -339,6 +364,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
         }
     }
+    if (showDataset) DatasetSheet(datasetKind, { datasetKind = it }, datasetTags, { t -> datasetTags = if (t in datasetTags) datasetTags - t else datasetTags + t }, datasetNote, { datasetNote = it }, onDismiss = { showDataset = false })
     if (showProbe) ProbeSheet(onDismiss = { showProbe = false }, onCompare = { showProbe = false; shoot(highQuality = false); scope.launch { delay(2500); shoot(highQuality = true) } })
 }
 

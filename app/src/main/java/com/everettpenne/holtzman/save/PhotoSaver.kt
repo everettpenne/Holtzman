@@ -54,6 +54,29 @@ class PhotoSaver(private val resolver: ContentResolver) {
     /** A DNG written by [body] to Pictures/Holtzman, pending until complete and removed on failure, like every other file. */
     fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body)
 
+    /**
+     * A file of any type in Documents/Holtzman/[folder] (the gallery does not list Documents, so a dataset of raw frames does not clutter it), pending
+     * until complete and removed on failure.
+     */
+    fun writeDocument(folder: String, name: String, mime: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/Holtzman/" + folder)
+            put(MediaStore.MediaColumns.DATE_TAKEN, timeMillis)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values) ?: throw java.io.IOException("The media library would not make $name.")
+        try {
+            resolver.openOutputStream(uri)?.use(body) ?: throw java.io.IOException("Could not open $name for writing.")
+            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        } catch (t: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw t
+        }
+        return uri
+    }
+
     private fun write(name: String, mime: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
