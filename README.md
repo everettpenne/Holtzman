@@ -27,6 +27,10 @@ app/ui/              Glass-themed Compose screens
 
 JDK 21, Android SDK 36, Android 14+ (the Pixel 10a runs 17). Release signing comes from `HOLTZMAN_RELEASE_*` environment variables.
 
+## On-device inference
+
+LiteRT (`CompiledModel`) runs bundled models on the Tensor G4 with no network and no Play services. The probe sheet has a "Test the Tensor accelerators" button. First measured result: GPU 18x faster than CPU on a denoiser-sized network; the NPU registers but did not yet take the model. See [docs/ix-pipeline.md](docs/ix-pipeline.md).
+
 ## Suite integration
 
 - **Capture contract.** Another app starts `com.everettpenne.holtzman.action.CAPTURE` for a result (extra `com.everettpenne.holtzman.extra.MODE` = `photo` or `video`); the person takes the shot, Holtzman saves it as usual and returns its content address with read permission, then closes. Back returns cancelled. Nothing is captured without the person pressing the shutter. See `CaptureContract.kt`.

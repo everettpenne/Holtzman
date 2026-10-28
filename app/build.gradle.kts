@@ -44,9 +44,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isReturnDefaultValues = true }
 }
+
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
     implementation(project(":ix"))
@@ -61,6 +62,10 @@ dependencies {
     implementation("com.everettpenne:glass")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.core:core-ktx:1.16.0")
+    // On-device inference (the Tensor G4's GPU and NPU): LiteRT's CompiledModel API, the runtime bundled in the app (no Play services, no network).
+    implementation("com.google.ai.edge.litert:litert:2.3.2")
+    implementation("com.google.ai.edge.litert:litert-gpu:2.3.2")
+    implementation("com.google.ai.edge.litert:litert-npu-runtime-google-tensor:2.3.2")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
