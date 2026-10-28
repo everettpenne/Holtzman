@@ -44,6 +44,13 @@ class PhotoSaver(private val resolver: ContentResolver) {
         return Saved(jpeg, dng)
     }
 
+    /** A JPEG of [bitmap] at [quality], with the EXIF orientation [degrees] written back afterwards, in Pictures/Holtzman like every other file. */
+    fun writeJpeg(name: String, timeMillis: Long, bitmap: android.graphics.Bitmap, quality: Int, degrees: Int): Uri {
+        val uri = write(name, "image/jpeg", timeMillis) { out -> if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)) throw java.io.IOException("The JPEG encoder refused $name.") }
+        setExifOrientation(uri, degrees)
+        return uri
+    }
+
     /** A DNG written by [body] to Pictures/Holtzman, pending until complete and removed on failure, like every other file. */
     fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body)
 

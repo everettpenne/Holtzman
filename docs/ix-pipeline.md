@@ -46,3 +46,34 @@ Each stage is judged on a fixed set of scenes shot with Holtzman and the stock c
 What this says: the **GPU is the dependable accelerator today**: a denoiser-sized network on a 12 MP frame (about 12 passes of this size) is roughly half a second, well within a shutter-to-saved budget. The **NPU is reachable by a third-party app** (the runtime registers, the Edge TPU libraries are public on this build), but this FP16 model was not taken by it. Likely causes, to be tested in this order: the NPU wants an int8-quantised model, and/or an ahead-of-time compile with the Tensor compiler plugin. Until an int8 model runs there (and is faster than the GPU), design for the GPU; the NPU stays an optimisation.
 
 Practical notes: the LiteRT 2.3 libraries need Kotlin 2.4 (the app moved off 2.1.20; Glass is a separate build and unaffected), and add about 70 MB to the APK (GPU and NPU runtimes); the debug build must be non-debuggable for any of this to be fast (a debuggable build ran the merge 90x slower).
+
+## Accelerator spike, second result: int8 model
+
+The same network fully integer-quantised (int8 weights and activations, `tools/make_spike_model.py` with a representative dataset):
+
+| Processor | fp16 model | int8 model |
+|---|---|---|
+| CPU | 652 ms | 148 ms |
+| GPU | 38 ms | 37 ms (no gain: the GPU runs it as float either way) |
+| NPU | 680 ms (= CPU output) | 151 ms (**output sum 11690.373, identical to the int8 CPU run: still the CPU**) |
+
+Conclusion: int8 helps the CPU 4.4x but does **not** make LiteRT hand the model to the NPU. The runtime lists NPU as available, yet both models come back bit-identical to the CPU. The remaining route is an ahead-of-time compile for the Tensor chip (the vendor compiler plugin, run on a host, producing a model with the NPU partition baked in). Not done; until it is, the GPU (37 ms per pass) is the shipping accelerator and the NPU stays unproven.
+
+## Measurements, one burst (Pixel 10a back camera, 6 frames, indoor, median scene level about 62 counts over black)
+
+Method: green-plane samples of the reference DNG against the merged DNG; flat tiles are the flattest 10% of 32x32 tiles in the reference, residual standard deviation after a plane fit (so slow gradients are not counted as noise).
+
+| Measure | Reference | Merged | Ratio |
+|---|---|---|---|
+| Noise, whole image (Immerkaer estimator, counts) | 10.9 | 5.6 | 1.94x |
+| Noise, flat tiles (counts) | 4.39 | 2.13 | 2.06x (ideal for 6 frames: 2.45x) |
+| Edge strength, gradient 99.5th percentile, block-averaged 8x8 so noise does not inflate it (JPEG luma) | 37.2 | 36.7 | edges kept |
+| Same, unaveraged | 49.6 | 26.4 | **misleading**: the reference's figure is mostly noise |
+
+Reading: the merge gets about 84% of the ideal noise reduction without softening real edges. Mean frames per cell was 5.94 of 6, so little was rejected; the gap to 2.45x is the alignment and the soft weighting, not over-rejection.
+
+Noise model fitted on the same burst: variance = 1.5 x signal + 7.9 counts squared (read noise about 2.8). The earlier guess was 0.8 and 5. The new values are the defaults in `IxMergeParams`. Caveats, plainly: it is one capture at one ISO; the flattest-tile selection biases the fit slightly low; shot noise scales with ISO and the model does not yet. The burst log now prints the ISO so further captures can pin that scaling down.
+
+Stage timings on the phone (non-debuggable build, 12 MP, 6 frames): merge 1.3 s, rendering two JPEGs 6.8 s, total 8.5 s. The render is the cost, and a GPU render pass is the obvious next target.
+
+Not measured: the effect of the new noise defaults on a fresh burst (installed on the phone, not yet re-shot), moving subjects, low light.

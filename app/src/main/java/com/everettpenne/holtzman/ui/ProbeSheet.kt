@@ -49,7 +49,7 @@ fun ProbeSheet(onDismiss: () -> Unit, onCompare: () -> Unit) {
             GlassButton("Take a comparison pair", onCompare, Modifier.fillMaxWidth(), prominent = false)
             GlassButton("Test the Tensor accelerators", {
                 spike = "Running…"
-                scope.launch(kotlinx.coroutines.Dispatchers.Default) { val t = AcceleratorSpike.text(AcceleratorSpike.run(context)); spike = t }
+                scope.launch(kotlinx.coroutines.Dispatchers.Default) { val t = AcceleratorSpike.text(AcceleratorSpike.run(context)); android.util.Log.i("HoltzmanSpike", t); spike = t }
             }, Modifier.fillMaxWidth(), prominent = false)
             spike?.let { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp) }
             saved?.let { Text(it, style = IosType.footnote) }

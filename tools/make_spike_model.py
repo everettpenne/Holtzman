@@ -1,7 +1,10 @@
 """Builds a small convolutional network (the size and shape of a RAW denoiser's trunk) as a .tflite file, to measure which processor on the Pixel's
 Tensor chip runs it and how fast. The weights are random: this measures speed and support, not quality.
 
-    ml-venv/bin/python tools/make_spike_model.py app/src/main/assets/spike_conv.tflite
+    ml-venv/bin/python tools/make_spike_model.py app/src/main/assets/spike_conv.tflite [app/src/main/assets/spike_conv_int8.tflite]
+
+The second file is the same network fully integer-quantized (int8 weights and activations, float at the edges), which is the form the Tensor NPU
+is meant to take. Calibrated on random inputs, so again speed and support, not accuracy.
 """
 import sys
 import numpy as np
@@ -18,3 +21,15 @@ conv = tf.lite.TFLiteConverter.from_keras_model(model)
 conv.target_spec.supported_types = [tf.float16]                       # half-precision weights: what the accelerators run best
 open(sys.argv[1], "wb").write(conv.convert())
 print("wrote", sys.argv[1], "params", model.count_params())
+
+if len(sys.argv) > 2:
+    def sample():
+        rng = np.random.default_rng(0)
+        for _ in range(8):
+            yield [rng.random((1, H, W, 4), dtype=np.float32)]
+    q = tf.lite.TFLiteConverter.from_keras_model(model)
+    q.optimizations = [tf.lite.Optimize.DEFAULT]
+    q.representative_dataset = sample
+    q.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+    open(sys.argv[2], "wb").write(q.convert())
+    print("wrote", sys.argv[2])

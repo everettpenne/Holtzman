@@ -42,9 +42,9 @@ internal class IxBand(val width: Int, maxRows: Int) {
 public class IxFlow(public val tilesX: Int, public val tilesY: Int, public val tileCells: Int, public val dx: IntArray, public val dy: IntArray)
 
 public class IxMergeParams(
-    /** Noise model of the RAW values: variance = [shot] * signal + [read]^2, in squared sensor counts. Rough defaults; a calibration on the phone replaces them. */
-    public val shot: Float = 0.8f,
-    public val read: Float = 5f,
+    /** Noise model of the RAW values: variance = [shot] * signal + [read]^2, in squared sensor counts. Defaults are a one-capture fit on a Pixel 10a back-camera burst (variance 1.5 * signal + 7.9 on its flattest tiles, so a slightly low estimate); they do not yet scale with ISO. */
+    public val shot: Float = 1.5f,
+    public val read: Float = 3f,
     /** How many noise standard deviations apart two frames may be before the other frame stops contributing: higher merges more (and ghosts more). */
     public val tolerance: Float = 3f,
     public val tileCells: Int = 16,

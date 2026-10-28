@@ -16,7 +16,7 @@ import java.nio.ByteOrder
 import java.util.TimeZone
 
 /** What a burst produced: the merged DNG, the unmerged reference frame as a DNG (for judging the merge), and how long and how well it went. */
-class BurstOutcome(val merged: Uri, val reference: Uri, val millis: Long, val meanFrames: Float, val frames: Int)
+class BurstOutcome(val merged: Uri, val reference: Uri, val mergedJpeg: Uri, val referenceJpeg: Uri, val millis: Long, val meanFrames: Float, val frames: Int)
 
 /**
  * Stage 1 and 2 of the pipeline, end to end: take the burst's RAW frames, pick the sharpest as the reference, align and merge the rest in the RAW
@@ -33,7 +33,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
             }
             val ref = IxBurst.sharpest(planes)
             val black = blackLevels(frames[ref].result, characteristics)
-            Log.i("HoltzmanBurst", "reference $ref, black ${black.toList()}")
+            Log.i("HoltzmanBurst", "reference $ref, black ${black.toList()}, iso ${frames[ref].result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY)}")
             val merged: IxMerged = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(log = { Log.i("HoltzmanBurst", it) }))
             Log.i("HoltzmanBurst", "merge done in ${(System.nanoTime() - started) / 1_000_000} ms")
             val base = captureBaseName(timeMillis, TimeZone.getDefault().getOffset(timeMillis).toLong())
@@ -45,9 +45,20 @@ class BurstProcessor(private val saver: PhotoSaver) {
                     it.writeByteBuffer(out, Size(frames[ref].width, frames[ref].height), frames[ref].pixels, 0)
                 }
             }
+            // stage 3: render both to JPEG with the same settings and the same exposure, so the two can be compared fairly
+            val settings = BurstRender.settings(frames[ref].result, characteristics, black)
+            frames[ref].pixels.rewind()
+            val refRaw = ShortArray(merged.width * merged.height).also { frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) }
+            val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings)
+            val tRender = System.nanoTime()
+            val mergedBitmap = BurstRender.toBitmap(merged.samples, merged.width, merged.height, settings, exposure)
+            val mergedJpeg = saver.writeJpeg("${base}_burst.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
+            val refBitmap = BurstRender.toBitmap(refRaw, merged.width, merged.height, settings, exposure)
+            val refJpeg = saver.writeJpeg("${base}_ref.jpg", timeMillis, refBitmap, 95, orientation); refBitmap.recycle()
+            Log.i("HoltzmanBurst", "rendered two pictures in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")
             val ms = (System.nanoTime() - started) / 1_000_000
             Log.i("HoltzmanBurst", "merged ${frames.size} frames in $ms ms, mean frames per cell ${merged.meanFrames}, reference $ref")
-            return BurstOutcome(mergedUri, refUri, ms, merged.meanFrames, frames.size)
+            return BurstOutcome(mergedUri, refUri, mergedJpeg, refJpeg, ms, merged.meanFrames, frames.size)
         }
     }
 
