@@ -21,6 +21,14 @@ dependencies {
     testImplementation("org.json:json:20240303")   // for the harness and tests on the JVM (Android has it built in)
 }
 
+// Aligns every frame of each burst to its reference and writes the aligned frames (training data for the learned denoiser)
+tasks.register<JavaExec>("alignDump") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.everettpenne.ix.AlignDumpKt")
+    args = listOf(project.findProperty("data")?.toString() ?: "")
+    jvmArgs("-Xmx6g")
+}
+
 // Runs the merge engine on real bursts from the camera's dataset mode; see src/test/kotlin/.../Harness.kt
 tasks.register<JavaExec>("harness") {
     classpath = sourceSets["test"].runtimeClasspath

@@ -300,3 +300,21 @@ A handheld photo of a wall of saturated red, orange and yellow panels (portrait,
 ## Dataset mode: "the photos are not saving" (2026-10-28)
 
 Inspected on the phone: nothing was failing. Between 14:10 and 14:16 the app had made exactly three saves, all complete (frames and `meta.json`): a normal photo that also kept its raw burst, and two data handheld bursts. No crash, no partial or hidden files, nothing in the log. What the user saw was a mode that gave no sign of working: DNG frames have no thumbnail in the Files app and are not in the gallery (they are in Documents, not Pictures), the "Saved" message vanished after 3.5 s, nothing counted what had been saved, and a debug switch left on from a test (`keepraw`) was making an ordinary photo create a 140 MB `photo_...` folder as well. Changes: every scene now gets a `preview.jpg` (rendered from its first frame, upright, a third of full size); the DATA chip counts saves this session and the message names the folder and stays 8 s; debug switches lapse ten minutes after they are set. Scenes saved before this have no preview.
+
+## A learned denoiser, on the TPU (2026-10-28)
+
+**Training** (`tools/denoiser`): noise2noise on the dataset (22 training scenes: 19 handheld bursts aligned to their sharpest frame, the ISO ladder, the 40-frame reference; 3 held-out scenes at ISO 407, 574 and 1101), a 49,000-parameter network, 12,000 steps, 28 minutes on the Mac's CPU. The first attempt (raw counts in, correction out) learned nothing: the loss stayed at its starting value because the noise is a few thousandths of the signal and the network found "do nothing" the cheapest answer. Giving it the fine detail in units of the local noise, and having it answer in those units, fixed it.
+
+**Quality, on scenes it never saw** (error against the clean picture, estimated as error against an independent set of frames minus that set's own noise):
+
+| scene | frames averaged | classical denoise | network | network error vs classical |
+|---|---|---|---|---|
+| ISO 407 | 3 / 4 | 2.63x / 1.83x | 3.40x / 2.13x | 1.30x / 1.17x lower |
+| ISO 574 | 3 / 4 | 4.70x / 6.68x | 6.39x / 9.30x | 1.36x / 1.39x lower |
+| ISO 1101 | 3 / 4 | 5.53x / 4.32x | 7.90x / 5.62x | 1.43x / 1.30x lower |
+
+(Noise reduction against the unprocessed input; the estimator is noisy, so the ratio between the two methods is the thing to read.) The network wins on every held-out scene, by 17 to 43% in error, and looks better: the classical denoise leaves blotchy, posterised patches in fine texture (the likely source of the blocky colour patches in the saturated kitchen photo), the network leaves natural texture. 8-bit quantisation costs 5% more error than float (0.359 against 0.342 in units of the input noise variance). The ISO ladder, which was in the training data, gives bigger gains (to 43x at ISO 200) but is the network's own training data: not evidence.
+
+**On the phone** (`TpuDenoiser`): the whole graph (all nine operations) runs on the TPU through NNAPI in one partition: 1 ms per 256 x 256 tile against 23 ms on the CPU in 8 bits and 111 ms in float; 8-bit output is bit-identical to the CPU's, float differs by 0.07% (16-bit hardware). A 12 MP mosaic is 63 tiles; preparing the tiles' features and writing results back is the real cost, first 2.8 s in plain Kotlin, now 0.7 to 0.8 s with bulk copies and four worker threads. A whole shot takes about 2.0 s (1.5 s with the classical denoise), stable over repeated bursts; the denoiser is loaded once at app start. If the model or the driver is missing, or a tile run fails, the classical denoise runs instead.
+
+**Caveats.** Trained on 22 scenes, indoor and dim for the most part; outdoor and very bright scenes (little noise) are barely represented, so there the network should do close to nothing, which has not been checked on pictures. The network was trained on inputs averaged from up to 4 frames and is used on a 6-frame merge, which is less noisy than anything it saw. Tuned for this sensor and its measured noise model. NNAPI is deprecated since Android 15.

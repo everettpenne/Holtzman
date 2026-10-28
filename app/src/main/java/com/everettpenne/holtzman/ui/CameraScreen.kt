@@ -170,13 +170,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(recording) { elapsed = 0; while (recording) { delay(1000); elapsed++ } }
     LaunchedEffect(videoMode) { if (videoMode && !audioGranted) askAudio.launch(android.Manifest.permission.RECORD_AUDIO) }
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
+    // load the TPU denoiser now, off the main thread, so the first photo does not wait for it
+    LaunchedEffect(Unit) { withContext(Dispatchers.Default) { com.everettpenne.holtzman.ml.TpuDenoiser.shared(context) } }
     LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
 
     fun shootBurst() {
         if (busy) return
         busy = true; status = "Hold still…"
         val chars = controller.characteristics
-        val processor = BurstProcessor(saver)
+        val processor = BurstProcessor(saver, context.applicationContext)
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         controller.focusForShot { controller.captureBurst(onResult = { frames ->
             scope.launch(Dispatchers.Default) {

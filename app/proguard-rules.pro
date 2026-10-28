@@ -1,4 +1,5 @@
 # R8 keeps what the Android framework and Compose consumer rules do not already.
-# LiteRT's native libraries call back into these classes by name, and the probe loads them by reflection-like JNI lookups.
--keep class com.google.ai.edge.litert.** { *; }
+# TensorFlow Lite's native library calls back into these classes by name.
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn org.tensorflow.lite.gpu.**
 -keepclasseswithmembernames class * { native <methods>; }

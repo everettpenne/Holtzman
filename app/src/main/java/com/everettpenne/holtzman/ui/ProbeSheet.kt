@@ -16,7 +16,6 @@ import androidx.compose.ui.unit.sp
 import com.everettpenne.glass.GlassButton
 import com.everettpenne.glass.GlassSheet
 import com.everettpenne.glass.IosType
-import com.everettpenne.holtzman.ml.AcceleratorSpike
 import kotlinx.coroutines.launch
 import com.everettpenne.holtzman.probe.ProbeCollector
 import com.everettpenne.holtzman.probe.ProbeFormat
@@ -31,7 +30,6 @@ fun ProbeSheet(onDismiss: () -> Unit, onCompare: () -> Unit) {
     val report = remember { ProbeCollector.collect(context) }
     val text = remember(report) { ProbeFormat.text(report) }
     var saved by remember { mutableStateOf<String?>(null) }
-    var spike by remember { mutableStateOf<String?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     GlassSheet(onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -58,11 +56,6 @@ fun ProbeSheet(onDismiss: () -> Unit, onCompare: () -> Unit) {
                 context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).edit().putBoolean("keepRaw", keep).apply()
             }, Modifier.fillMaxWidth(), prominent = false)
             if (keep) Text("About 140 MB per photo, in Documents/Holtzman/Dataset/photo_*. Turn it off when you are done.", style = IosType.footnote)
-            GlassButton("Test the Tensor accelerators", {
-                spike = "Running…"
-                scope.launch(kotlinx.coroutines.Dispatchers.Default) { val t = AcceleratorSpike.text(AcceleratorSpike.run(context)); android.util.Log.i("HoltzmanSpike", t); spike = t }
-            }, Modifier.fillMaxWidth(), prominent = false)
-            spike?.let { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp) }
             saved?.let { Text(it, style = IosType.footnote) }
             Spacer(Modifier.height(8.dp))
         }

@@ -9,8 +9,6 @@ val signingEnv = listOf("STORE_FILE", "STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWO
 val canSign = signingEnv.values.all { it != null }
 
 android {
-    // LiteRT finds its NPU compiler plugin by listing a directory, which only works if the native libraries are extracted to disk
-    packaging { jniLibs { useLegacyPackaging = true } }
     namespace = "com.everettpenne.holtzman"
     compileSdk = 36
     defaultConfig {
@@ -64,10 +62,9 @@ dependencies {
     implementation("com.everettpenne:glass")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.core:core-ktx:1.16.0")
-    // On-device inference (the Tensor G4's GPU and NPU): LiteRT's CompiledModel API, the runtime bundled in the app (no Play services, no network).
-    implementation("com.google.ai.edge.litert:litert:2.3.2")
-    implementation("com.google.ai.edge.litert:litert-gpu:2.3.2")
-    implementation("com.google.ai.edge.litert:litert-npu-runtime-google-tensor:2.3.2")
+    // On-device inference on the Tensor G4's TPU through NNAPI: the classic TensorFlow Lite runtime, which still carries the NNAPI delegate (LiteRT 2.x does not,
+    // and its own route to the TPU is refused for apps off Google's list; docs/ix-pipeline.md).
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
