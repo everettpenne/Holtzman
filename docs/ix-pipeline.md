@@ -171,12 +171,12 @@ All three were designed on a host first (`tools/prototypes/`: take a sharp photo
 
 **Spatial denoise of the merged RAW mosaic: shipped** (`IxDenoise`, and inside `GpuMerge`). An edge-aware average over the neighbouring 2x2 cells, guided by the cell brightness and sized by the measured noise model and by how many frames the merge actually combined, averaging each sample only with samples of its own colour. Mean PSNR after demosaic, merged-frame noise at 6 frames:
 
-| ISO | no denoise | strength 1.0 | strength 1.6 (used) | strength 2.4 |
-|---|---|---|---|---|
-| 100 | 38.2 | 38.8 | 38.9 | n/a |
-| 800 | 34.3 | 37.2 | 37.8 | 38.0 |
-| 3200 | 29.1 | 34.4 | 35.9 | n/a |
+| ISO | no denoise | strength 0.7 | 1.0 | 1.4 | 1.8 | 2.4 |
+|---|---|---|---|---|---|---|
+| 100 | 38.21 | 38.80 | 38.83 | 38.87 | not run | not run |
+| 800 | 34.31 | 36.67 | 37.15 | 37.59 | 37.84 | 38.00 |
+| 3200 | 29.10 | 33.39 | 34.42 | 35.33 | not run | not run |
 
-(The gain flattens past about 2.4; 1.6 keeps most of it while leaving detail margin, since PSNR does not fully see lost fine texture.) An emulator test runs the GPU merge with denoise against the CPU engine on synthetic noisy frames: under 0.5% of samples differ by more than 2 counts.
+The shipped strength is 1.6, between the 1.4 and 1.8 columns (not measured on its own). The gain flattens past about 2.4 at ISO 800; a moderate strength keeps detail margin, since PSNR does not fully see lost fine texture. An emulator test runs the GPU merge with denoise against the CPU engine on synthetic noisy frames: under 0.5% of samples differ by more than 2 counts.
 
 **Sub-pixel alignment: tested, not shipped.** For the 1x merge it does not help: moving a frame by a fraction of a pixel means interpolating each colour from a lattice with 2-pixel spacing, which blurs more than the up-to-1-pixel misalignment of the whole-cell alignment does (about 0.8 px against 0.3 px of blur by my estimate). It only pays when the output has more pixels than the sensor (zoom), as super-resolution: every raw sample is splatted at its true position into per-colour planes at 2x. On the prototype this loses to demosaic-plus-upscale of a single frame (6 frames: 26.9 against 30.3 dB with noise; even 49 frames covering every phase: 30.2 against 33.7 dB), because the splat adds blur and nothing deconvolves it. Making it work would need at least 15 frames and a deconvolution step, and the RAW stream is not cropped by the zoom today (a burst at 2x gives the full field of view), so it is a larger project than the three-frame-class fixes. Parked.
