@@ -18,12 +18,14 @@ class GpuMerge(private val gl: GlContext) {
     private val align = gl.program(alignShader())
     private val accumulate = gl.program(ACCUMULATE_SHADER)
     private val finish = gl.program(FINISH_SHADER)
+    /** The spatial denoise of the merged mosaic; 0 if it would not build here (the merge then returns the mosaic undenoised). */
+    private val denoiseProgram = try { gl.program(DENOISE_SHADER).also { p -> for (u in listOf("cells", "halfWidth", "black", "shot", "readVar", "neff", "strength")) gl.loc(p, u) } } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "raw denoise unavailable: $t"); 0 }
 
     /**
      * Merges [frames] (tight mosaics, native-endian 16-bit samples, [width] x [height]) around [reference]. Same contract as IxBurst.merge. The frames are
      * read in place from their direct buffers.
      */
-    fun merge(frames: List<ByteBuffer>, width: Int, height: Int, reference: Int, black: IntArray, params: IxMergeParams): IxMerged {
+    fun merge(frames: List<ByteBuffer>, width: Int, height: Int, reference: Int, black: IntArray, params: IxMergeParams, denoise: Float = 0f): IxMerged {
         require(frames.size >= 1 && reference in frames.indices && width % 2 == 0 && height % 2 == 0) { "bad merge input" }
         val t0 = System.nanoTime()
         val cw = width / 2; val ch = height / 2
@@ -41,6 +43,7 @@ class GpuMerge(private val gl: GlContext) {
             val acc = buf(cw * ch * 16); val weights = buf(cw * ch * 4)
             val counter = buf(4, ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder()))
             val out = buf(width * height * 2)
+            val smooth = if (denoise > 0f && denoiseProgram != 0) buf(width * height * 2) else 0
 
             fun pyramid(raw: Int, l1: Int, l2: Int, l3: Int) {
                 GLES31.glUseProgram(gray)
@@ -88,22 +91,37 @@ class GpuMerge(private val gl: GlContext) {
             }
 
             params.log("gpu stage totals: pyramids ${tp / 1_000_000} ms, align ${ta / 1_000_000} ms, accumulate ${tm / 1_000_000} ms")
+            // how many frames' worth of averaging the merge achieved: read the contributor count now (this waits for the merge passes), because the
+            // spatial denoise sizes its tolerance by it
+            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, counter)
+            val contributors = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).int.toLong() and 0xFFFFFFFFL
+            GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+            val meanFrames = 1f + contributors.toFloat() / (cw * ch)
             GLES31.glUseProgram(finish)
             gl.setInts(finish, "cells", cw, ch); gl.setInts(finish, "width", width); gl.setInts(finish, "hasOthers", if (first) 0 else 1)
             gl.bind(0, raws[reference]); gl.bind(1, acc); gl.bind(2, weights); gl.bind(3, out)
             GLES31.glDispatchCompute((cw + 15) / 16, (ch + 15) / 16, 1)
-            GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+            GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+
+            var result = out
+            if (smooth != 0) {
+                GLES31.glUseProgram(denoiseProgram)
+                gl.setInts(denoiseProgram, "cells", cw, ch); gl.setInts(denoiseProgram, "halfWidth", width / 2); gl.setInts(denoiseProgram, "black", *black)
+                GLES31.glUniform1f(gl.loc(denoiseProgram, "shot"), params.shot); GLES31.glUniform1f(gl.loc(denoiseProgram, "readVar"), params.read * params.read)
+                GLES31.glUniform1f(gl.loc(denoiseProgram, "neff"), meanFrames); GLES31.glUniform1f(gl.loc(denoiseProgram, "strength"), denoise)
+                gl.bind(0, out); gl.bind(1, smooth)
+                GLES31.glDispatchCompute((cw + 15) / 16, (ch + 15) / 16, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                result = smooth
+            } else GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
 
             val samples = ShortArray(width * height)
-            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, out)
+            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, result)
             (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, width * height * 2, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asShortBuffer().get(samples)
-            GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
-            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, counter)
-            val contributors = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).int.toLong() and 0xFFFFFFFFL
             GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
             check(GLES31.glGetError() == GLES31.GL_NO_ERROR) { "GL error during the merge" }
             params.log("gpu merge done in ${(System.nanoTime() - t0) / 1_000_000} ms")
-            return IxMerged(samples, width, height, 1f + contributors.toFloat() / (cw * ch))
+            return IxMerged(samples, width, height, meanFrames)
         } finally { gl.delete(*owned.toIntArray()) }
     }
 
@@ -249,6 +267,37 @@ class GpuMerge(private val gl: GlContext) {
                 }
                 barrier();
                 if (gl_LocalInvocationIndex == 0u && localCount > 0u) atomicAdd(contributors, localCount);
+            }
+        """
+
+        /** Spatial denoise of the merged mosaic, one thread per 2x2 cell: IxDenoise.mosaic on the GPU (same weights, same tolerance). */
+        val DENOISE_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 0) readonly buffer Src { uint src[]; };
+            layout(std430, binding = 1) writeonly buffer Dst { uint dst[]; };
+            uniform ivec2 cells; uniform int halfWidth; uniform ivec4 black; uniform float shot; uniform float readVar; uniform float neff; uniform float strength;
+            vec4 cellAt(ivec2 c) {
+                c = clamp(c, ivec2(0), cells - 1);
+                uint a = src[(2 * c.y) * halfWidth + c.x]; uint b = src[(2 * c.y + 1) * halfWidth + c.x];
+                return vec4(float(a & 0xFFFFu), float(a >> 16), float(b & 0xFFFFu), float(b >> 16));
+            }
+            void main() {
+                ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+                if (p.x >= cells.x || p.y >= cells.y) return;
+                vec4 c0 = cellAt(p);
+                float g0 = dot(c0 - vec4(black), vec4(1.0));
+                float variance = (shot * max(g0, 0.0) + 4.0 * readVar) / max(neff, 1.0);
+                float denom = 4.0 * strength * strength * variance + 1e-9;
+                vec4 acc = vec4(0.0); float ws = 0.0;
+                for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
+                    vec4 q = cellAt(p + ivec2(i, j));
+                    float d = dot(q - vec4(black), vec4(1.0)) - g0;
+                    float w = exp(-(d * d) / denom - float(i * i + j * j) / 4.5);
+                    acc += w * q; ws += w;
+                }
+                uvec4 v = uvec4(acc / ws + 0.5);
+                dst[(2 * p.y) * halfWidth + p.x] = (v.x & 0xFFFFu) | ((v.y & 0xFFFFu) << 16);
+                dst[(2 * p.y + 1) * halfWidth + p.x] = (v.z & 0xFFFFu) | ((v.w & 0xFFFFu) << 16);
             }
         """
 

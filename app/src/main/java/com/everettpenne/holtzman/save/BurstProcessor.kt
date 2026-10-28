@@ -73,7 +73,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
     private fun mergeBest(gl: GlContext?, frames: List<BurstFrame>, planes: List<IxPlane>, ref: Int, black: IntArray, params: com.everettpenne.ix.IxMergeParams): IxMerged {
         if (gl != null) {
             try {
-                val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params)
+                val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU) 0f else RAW_DENOISE)
                 if (VERIFY_GPU) {
                     val t = System.nanoTime()
                     val cpu = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(params.shot, params.read, params.tolerance, params.tileCells, params.searchCells))
@@ -84,10 +84,13 @@ class BurstProcessor(private val saver: PhotoSaver) {
                 return gpu
             } catch (t: Throwable) { Log.w("HoltzmanBurst", "GPU merge unavailable, using the CPU: $t") }
         }
-        return IxBurst.merge(planes, ref, black, params)
+        val merged = IxBurst.merge(planes, ref, black, params)
+        // the GPU did the spatial denoise inside its merge; on the CPU path it is done here, on the merged mosaic
+        val smooth = com.everettpenne.ix.IxDenoise.mosaic(merged.samples, merged.width, merged.height, black, params.shot, params.read * params.read, merged.meanFrames, RAW_DENOISE)
+        return IxMerged(smooth, merged.width, merged.height, merged.meanFrames)
     }
 
-    private companion object { const val VERIFY_GPU = false }
+    private companion object { const val VERIFY_GPU = false; /** Tolerance of the spatial denoise of the merged mosaic, in noise deviations. */ const val RAW_DENOISE = 1.6f }
 
     /**
      * Renders the merged and reference mosaics on the GPU, and checks the first against the CPU renderer on one band of rows (the log says how far
