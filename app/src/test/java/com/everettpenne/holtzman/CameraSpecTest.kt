@@ -88,4 +88,12 @@ class CameraSpecTest {
         assertEquals(TimerMode.THREE, TimerMode.OFF.next()); assertEquals(TimerMode.TEN, TimerMode.THREE.next()); assertEquals(TimerMode.OFF, TimerMode.TEN.next())
         assertEquals(1, aeModeFor(FlashMode.ON, hasFlash = false)); assertEquals(1, aeModeFor(FlashMode.OFF, true)); assertEquals(2, aeModeFor(FlashMode.AUTO, true)); assertEquals(3, aeModeFor(FlashMode.ON, true))
     }
+
+    @Test fun videoQualityAndClock() {
+        val all = listOf(VideoQuality.UHD, VideoQuality.FHD, VideoQuality.HD)
+        assertEquals(VideoQuality.FHD, defaultVideoQuality(all)); assertEquals(VideoQuality.UHD, defaultVideoQuality(listOf(VideoQuality.UHD))); assertNull(defaultVideoQuality(emptyList()))
+        assertEquals(VideoQuality.FHD, VideoQuality.UHD.next(all)); assertEquals(VideoQuality.UHD, VideoQuality.HD.next(all)); assertEquals(VideoQuality.UHD, VideoQuality.UHD.next(emptyList()))
+        assertEquals("0:00", recordingClock(0)); assertEquals("0:09", recordingClock(9)); assertEquals("1:05", recordingClock(65)); assertEquals("1:00:00", recordingClock(3600)); assertEquals("0:00", recordingClock(-3))
+        assertEquals(90, videoOrientation(90, 0, false)); assertEquals(0, videoOrientation(90, 270, false))
+    }
 }

@@ -136,3 +136,26 @@ enum class TimerMode(val seconds: Int, val label: String) {
     OFF(0, "Off"), THREE(3, "3 s"), TEN(10, "10 s");
     fun next(): TimerMode = entries[(ordinal + 1) % entries.size]
 }
+
+/** The video sizes on offer. [camcorder] is the CamcorderProfile.QUALITY_* constant (2160P = 8, 1080P = 6, 720P = 5), kept as a number so this file stays Android-free. */
+enum class VideoQuality(val label: String, val camcorder: Int) {
+    UHD("4K", 8), FHD("1080p", 6), HD("720p", 5);
+    /** The next smaller size the phone also offers, wrapping to the largest. */
+    fun next(available: List<VideoQuality>): VideoQuality {
+        if (available.isEmpty()) return this
+        val i = available.indexOf(this)
+        return available[(i + 1) % available.size]
+    }
+}
+
+/** The default size: 1080p when offered (it is what people expect from a phone's default, and what keeps a minute of video near 130 MB), else the largest offered. */
+fun defaultVideoQuality(available: List<VideoQuality>): VideoQuality? = if (VideoQuality.FHD in available) VideoQuality.FHD else available.firstOrNull()
+
+/** The recording clock, m:ss (h:mm:ss from an hour). */
+fun recordingClock(seconds: Int): String {
+    val s = seconds.coerceAtLeast(0)
+    return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+}
+
+/** The orientation hint for a video file: the sensor's angle turned by the phone's tilt, as for a photo. */
+fun videoOrientation(sensorOrientation: Int, deviceDegrees: Int, frontFacing: Boolean): Int = jpegOrientation(sensorOrientation, deviceDegrees, frontFacing)

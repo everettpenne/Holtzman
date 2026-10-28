@@ -42,10 +42,13 @@ import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.camera.*
 import com.everettpenne.holtzman.save.PhotoSaver
 import com.everettpenne.holtzman.save.UltraHdr
+import com.everettpenne.holtzman.save.VideoSaver
+import com.everettpenne.holtzman.save.PendingVideo
 import com.everettpenne.holtzman.save.Saved
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -83,6 +86,15 @@ private fun CameraScreen() {
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
     var hdr by remember { mutableStateOf(false) }
+    var videoMode by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var elapsed by remember { mutableIntStateOf(0) }
+    var quality by remember { mutableStateOf<VideoQuality?>(null) }
+    var lastVideo by remember { mutableStateOf<android.net.Uri?>(null) }
+    val videoSaver = remember { VideoSaver(context.contentResolver) }
+    var pendingVideo by remember { mutableStateOf<PendingVideo?>(null) }
+    var audioGranted by remember { mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
+    val askAudio = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { audioGranted = it }
     var zoom by remember { mutableFloatStateOf(1f) }
     var flash by remember { mutableStateOf(FlashMode.OFF) }
     var flashAvailable by remember { mutableStateOf(false) }
@@ -92,17 +104,20 @@ private fun CameraScreen() {
     var zoomRange by remember { mutableStateOf(1f..1f) }
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
     var surfaceReady by remember { mutableStateOf<SurfaceHolder?>(null) }
+    var surfaceDims by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var last by remember { mutableStateOf<Saved?>(null) }
     var showProbe by remember { mutableStateOf(false) }
     var deviceDegrees by remember { mutableIntStateOf(0) }
+    val qualities = remember(lens) { controller.videoQualitiesFor(lens) }
+    LaunchedEffect(qualities) { if (quality == null || quality !in qualities) quality = defaultVideoQuality(qualities) }
     val nightAvailable = remember(lens) { android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT in controller.extensionsFor(lens) }
     // a lens without Night turns Night off
     LaunchedEffect(nightAvailable) { if (!nightAvailable) night = false }
     val nightExtension = if (night && nightAvailable) android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT else null
     LaunchedEffect(lens, nightExtension) { zoom = 1f }
-    val previewShape = remember(lens, nightExtension) { controller.previewSizeFor(lens, nightExtension) }
+    val previewShape = remember(lens, nightExtension, videoMode) { controller.previewSizeFor(lens, if (videoMode) null else nightExtension, videoMode) }
 
     // the phone's tilt, for the saved picture's orientation
     DisposableEffect(context) {
@@ -118,12 +133,30 @@ private fun CameraScreen() {
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, hdr, resumed, previewShape, nightExtension) {
-        val surface = surfaceReady?.surface
-        if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
-        previewShape?.let { surfaceReady?.setFixedSize(it.width, it.height) }
-        controller.open(lens, surface, raw || hdr, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+    LaunchedEffect(surfaceReady, lens, raw, hdr, resumed, previewShape, nightExtension, videoMode, quality) {
+        if (surfaceReady == null || !resumed) { controller.close(); return@LaunchedEffect }
+        previewShape?.let { shape ->
+            val holder = surfaceReady ?: return@let
+            if (surfaceDims != shape.width to shape.height) {
+                // changing a SurfaceView's buffer size replaces its Surface a moment later; a camera opened on the old one fails as "unconfigured". Wait for the new size.
+                holder.setFixedSize(shape.width, shape.height)
+                kotlinx.coroutines.withTimeoutOrNull(1500) { snapshotFlow { surfaceDims }.first { it == shape.width to shape.height } }
+            }
+        }
+        val surface = surfaceReady?.surface ?: run { controller.close(); return@LaunchedEffect }
+        controller.open(lens, surface, raw || hdr, if (videoMode) null else nightExtension, if (videoMode) quality else null, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
+    DisposableEffect(controller) {
+        // however a recording ends (stopped, or the screen was left), the file is finished or removed here
+        controller.onRecordingEnded = { ok ->
+            val v = pendingVideo; pendingVideo = null
+            scope.launch(Dispatchers.Main) { recording = false }
+            if (v != null) scope.launch(Dispatchers.IO) { videoSaver.finish(v, ok); withContext(Dispatchers.Main) { if (ok) { lastVideo = v.uri; status = "Saved video" } else status = "Recording too short to keep" } }
+        }
+        onDispose { controller.onRecordingEnded = null }
+    }
+    LaunchedEffect(recording) { elapsed = 0; while (recording) { delay(1000); elapsed++ } }
+    LaunchedEffect(videoMode) { if (videoMode && !audioGranted) askAudio.launch(android.Manifest.permission.RECORD_AUDIO) }
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
 
@@ -147,7 +180,20 @@ private fun CameraScreen() {
     }
 
     /** The shutter: now, or after the self-timer's countdown (a second tick at a time, so it can be seen and a second press cancels it). */
+    fun toggleRecording() {
+        android.util.Log.i("HoltzmanCamera", "toggleRecording: controller.recording=${controller.recording} ui.recording=$recording")
+        // the controller is the truth about whether it is recording (the screen's copy is updated from another thread and can lag a tap behind)
+        if (controller.recording) { controller.stopRecording { }; return }
+        scope.launch(Dispatchers.IO) {
+            val pending = runCatching { videoSaver.begin() }.getOrElse { status = "Couldn't start a recording: ${it.message}"; return@launch }
+            pendingVideo = pending
+            controller.startRecording(pending.descriptor.fileDescriptor, audioGranted, deviceDegrees,
+                onStarted = { scope.launch(Dispatchers.Main) { recording = true; if (!audioGranted) status = "Recording without sound" } },
+                onError = { scope.launch(Dispatchers.Main) { status = it } })
+        }
+    }
     fun trigger() {
+        if (videoMode) { toggleRecording(); return }
         if (countdown > 0) { countdown = 0; return }          // pressing during the countdown cancels it
         if (timer == TimerMode.OFF) { shoot(); return }
         scope.launch {
@@ -168,7 +214,7 @@ private fun CameraScreen() {
                 factory = { c -> SurfaceView(c).apply {
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(h: SurfaceHolder) { surfaceReady = h }
-                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
+                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) { surfaceDims = w to hh }
                         override fun surfaceDestroyed(h: SurfaceHolder) { surfaceReady = null }
                     })
                 } },
@@ -197,20 +243,33 @@ private fun CameraScreen() {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false } }
-                if (!night) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
-                if (!night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+                if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false } }
+                if (!videoMode && !night) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
+                if (!videoMode && !night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }
         // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture
         Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (flashAvailable && !night) Chip(when (flash) { FlashMode.OFF -> "⚡ Off"; FlashMode.AUTO -> "⚡ Auto"; FlashMode.ON -> "⚡ On" }, flash != FlashMode.OFF, enabled = true) { flash = flash.next() }
-            Chip(if (timer == TimerMode.OFF) "Timer" else timer.label, timer != TimerMode.OFF, enabled = true) { timer = timer.next() }
+            if (videoMode) quality?.let { q -> Chip(q.label, false, enabled = !recording && qualities.size > 1) { quality = q.next(qualities) } }
+            if (!videoMode && flashAvailable && !night) Chip(when (flash) { FlashMode.OFF -> "⚡ Off"; FlashMode.AUTO -> "⚡ Auto"; FlashMode.ON -> "⚡ On" }, flash != FlashMode.OFF, enabled = true) { flash = flash.next() }
+            if (!videoMode) Chip(if (timer == TimerMode.OFF) "Timer" else timer.label, timer != TimerMode.OFF, enabled = true) { timer = timer.next() }
             Chip("Grid", grid, enabled = true) { grid = !grid }
         }
         status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 120.dp)
             .background(Color.Black.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) }
 
+        // recording clock
+        if (recording) Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 120.dp).background(Color.Black.copy(alpha = .55f), RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(10.dp).background(Holtzman.red, CircleShape)); Spacer(Modifier.width(8.dp))
+            Text(recordingClock(elapsed), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+        }
+        // PHOTO / VIDEO
+        Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 196.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            listOf(false to "PHOTO", true to "VIDEO").forEach { (v, label) ->
+                Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (videoMode == v) Holtzman.accent else Color.White.copy(alpha = .75f),
+                    modifier = Modifier.clickable(enabled = !recording && videoMode != v) { videoMode = v; if (v) { night = false; hdr = false } }.padding(8.dp))
+            }
+        }
         // zoom: the stops the camera offers, and the ratio now applied
         Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 140.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             zoomStops(zoomRange.start, zoomRange.endInclusive).forEach { stop ->
@@ -227,11 +286,13 @@ private fun CameraScreen() {
         // bottom: the last photo, the shutter, the other lens
         Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 28.dp, start = 32.dp, end = 32.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .12f)).clickable(enabled = last != null) {
-                last?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it.jpeg, "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
+            Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .12f)).clickable(enabled = if (videoMode) lastVideo != null else last != null) {
+                (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
             }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f)) }
-            Box(Modifier.size(84.dp).border(4.dp, Color.White, CircleShape).padding(7.dp).clip(CircleShape).background(if (busy) Holtzman.accent.copy(alpha = .5f) else Color.White)
-                .clickable(enabled = !busy) { trigger() }.semantics { contentDescription = "Shutter" })
+            // the whole 84 dp circle is the button: the tap area is set before the ring's padding, so it does not shrink while recording
+            Box(Modifier.size(84.dp).clip(CircleShape).clickable(enabled = !busy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
+                .border(4.dp, Color.White, CircleShape).padding(if (recording) 22.dp else 7.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
+                .background(if (videoMode) Holtzman.red else if (busy) Holtzman.accent.copy(alpha = .5f) else Color.White))
             Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White.copy(alpha = .12f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK },
                 contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
         }

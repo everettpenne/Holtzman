@@ -3,9 +3,11 @@
 
     <!--
       Holtzman asks for the camera and nothing else. There is no INTERNET permission, no location, no storage permission (photos are written
-      through MediaStore, which needs none), and no microphone until video lands (it will be asked for in context).
+      through MediaStore, which needs none), and the microphone only for video, asked for the first time you record.
     -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Asked for in context, the first time video is recorded; a refusal records without sound. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
 
     <application

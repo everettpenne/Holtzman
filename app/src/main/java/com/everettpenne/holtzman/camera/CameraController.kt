@@ -7,7 +7,9 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.hardware.camera2.params.ExtensionSessionConfiguration
 import android.hardware.camera2.params.OutputConfiguration
+import android.media.CamcorderProfile
 import android.media.Image
+import android.media.MediaRecorder
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -69,6 +71,19 @@ class CameraController(private val context: Context) {
     private val afReset = Runnable { clearFocus() }
     @Volatile private var precapturing = false
 
+    /** Set when the camera was opened for video: the size recorded. */
+    var videoQuality: VideoQuality? = null; private set
+    private var recorder: MediaRecorder? = null
+    @Volatile var recording: Boolean = false; private set
+    /** Told once when a recording ends, however it ends (stopped, or the screen left): true when a usable file was written. The caller finishes or removes the file. */
+    var onRecordingEnded: ((Boolean) -> Unit)? = null
+
+    /** The video sizes the camera of [lens] can record (from the phone's own camcorder profiles). */
+    fun videoQualitiesFor(lens: Lens): List<VideoQuality> {
+        val id = idFor(lens)?.toIntOrNull() ?: return emptyList()
+        return VideoQuality.entries.filter { runCatching { CamcorderProfile.hasProfile(id, it.camcorder) }.getOrDefault(false) }
+    }
+
     var characteristics: CameraCharacteristics? = null; private set
     var cameraId: String? = null; private set
     var previewSize: Dim? = null; private set
@@ -101,8 +116,9 @@ class CameraController(private val context: Context) {
         else manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(SurfaceTexture::class.java).orEmpty().map { Dim(it.width, it.height) }
 
     /** The preview size for [lens] (and [extension], whose sizes differ), so the screen can be laid out before the camera is open. Null when the lens is missing. */
-    fun previewSizeFor(lens: Lens, extension: Int? = null): Dim? {
+    fun previewSizeFor(lens: Lens, extension: Int? = null, video: Boolean = false): Dim? {
         val id = idFor(lens) ?: return null
+        if (video) return pickPreviewSize(previewSizes(id, null), 16f / 9f)
         val still = pickStillSize(stillSizes(id, extension)) ?: return null
         return pickPreviewSize(previewSizes(id, extension), still.ratio)
     }
@@ -112,24 +128,25 @@ class CameraController(private val context: Context) {
      * once frames are flowing; [onError] says what went wrong.
      */
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
-    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, onReady: () -> Unit, onError: (String) -> Unit) {
+    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
         val gen = ++generation
         val id = idFor(lens) ?: return onError("This phone has no ${lens.name.lowercase()} camera.")
         val chars = manager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return onError("The camera reports no stream sizes.")
-        val still = pickStillSize(stillSizes(id, extension)) ?: return onError("No 4:3 photo size.")
-        val preview = pickPreviewSize(previewSizes(id, extension), still.ratio) ?: return onError("No preview size.")
+        // for video the picture is 16:9 and there is no still stream at all; the recorder's surface joins the session only while recording
+        val still = if (video != null) null else pickStillSize(stillSizes(id, extension)) ?: return onError("No 4:3 photo size.")
+        val preview = (if (video != null) pickPreviewSize(previewSizes(id, null), 16f / 9f) else pickPreviewSize(previewSizes(id, extension), still!!.ratio)) ?: return onError("No preview size.")
         // RAW is the normal pipeline's; an extension hands back its own processed JPEG only.
-        val raw = if (extension == null && wantRaw && chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true)
+        val raw = if (video == null && extension == null && wantRaw && chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true)
             map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }?.let { Dim(it.width, it.height) } else null
 
         val zr = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
         zoomMin = zr?.lower ?: 1f; zoomMax = zr?.upper ?: 1f; zoom = clampZoom(1f, zoomMin, zoomMax); focusRegion = null
         zoomSupportedInExtension = extension != null && runCatching { manager.getCameraExtensionCharacteristics(id).getAvailableCaptureRequestKeys(extension).contains(CaptureRequest.CONTROL_ZOOM_RATIO) }.getOrDefault(false)
         flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-        characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension
-        jpegReader = ImageReader.newInstance(still.width, still.height, ImageFormat.JPEG, 3)
+        characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension; videoQuality = video
+        jpegReader = still?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.JPEG, 3) }
         rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 3) }
 
         manager.openCamera(id, object : CameraDevice.StateCallback() {
@@ -165,8 +182,9 @@ class CameraController(private val context: Context) {
         val b = repeatingTemplate!!
         if (extension == null || zoomSupportedInExtension) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
         if (extension == null) {
-            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            b.set(CaptureRequest.CONTROL_AF_MODE, if (videoQuality != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            if (videoQuality != null) stabilise(b)
             val r = focusRegion
             if (r != null) {
                 val area = arrayOf(android.hardware.camera2.params.MeteringRectangle(r[0], r[1], r[2] - r[0], r[3] - r[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX))
@@ -222,6 +240,78 @@ class CameraController(private val context: Context) {
     }
 
     private fun clearFocus() { focusRegion = null; resend() }
+
+    /** Electronic stabilisation for video when the camera has it, otherwise optical when it has that. */
+    private fun stabilise(b: CaptureRequest.Builder) {
+        val chars = characteristics ?: return
+        if (chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)?.contains(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON) == true)
+            b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+        else if (chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true)
+            b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+    }
+
+    /**
+     * Starts recording into [fd] (a file the caller made: its name and where it lives are its business). The session is rebuilt with the recorder's
+     * surface beside the preview, then the recorder starts; this takes about half a second. [withAudio] adds the microphone. [onStarted] and [onError]
+     * run on the camera thread.
+     */
+    fun startRecording(fd: java.io.FileDescriptor, withAudio: Boolean, deviceDegrees: Int, onStarted: () -> Unit, onError: (String) -> Unit) {
+        val camera = device ?: return onError("The camera is not open.")
+        val quality = videoQuality ?: return onError("The camera is not in video mode.")
+        val id = cameraId?.toIntOrNull() ?: return onError("Unknown camera.")
+        val chars = characteristics ?: return
+        Log.i(TAG, "startRecording: recording=$recording")
+        val gen = generation
+        val profile = runCatching { CamcorderProfile.get(id, quality.camcorder) }.getOrNull() ?: return onError("This phone cannot record ${quality.label}.")
+        val front = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        handler.post {
+            try {
+                val r = MediaRecorder(context)
+                if (withAudio) r.setAudioSource(MediaRecorder.AudioSource.MIC)
+                r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                r.setOutputFormat(profile.fileFormat)
+                r.setOutputFile(fd)
+                r.setVideoEncodingBitRate(profile.videoBitRate); r.setVideoFrameRate(profile.videoFrameRate)
+                r.setVideoSize(profile.videoFrameWidth, profile.videoFrameHeight)
+                r.setVideoEncoder(profile.videoCodec)
+                if (withAudio) { r.setAudioEncoder(profile.audioCodec); r.setAudioEncodingBitRate(profile.audioBitRate); r.setAudioSamplingRate(profile.audioSampleRate); r.setAudioChannels(profile.audioChannels) }
+                r.setOrientationHint(videoOrientation(chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, front))
+                r.prepare()
+                recorder = r
+                runCatching { session?.close() }; session = null
+                camera.createCaptureSession(listOf(previewSurface!!, r.surface), object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(s: CameraCaptureSession) {
+                        if (gen != generation) { s.close(); runCatching { r.release() }; return }
+                        session = s
+                        try {
+                            repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply { addTarget(previewSurface!!); addTarget(r.surface) }
+                            s.setRepeatingRequest(previewRequest(), null, handler)
+                            r.start(); recording = true
+                            onStarted()
+                        } catch (e: Exception) { Log.w(TAG, "recording would not start", e); abandonRecorder(); onError("Recording would not start: ${e.message}") }
+                    }
+                    override fun onConfigureFailed(s: CameraCaptureSession) { abandonRecorder(); onError("The camera could not be configured for video.") }
+                }, handler)
+            } catch (e: Exception) { Log.w(TAG, "recorder setup failed", e); abandonRecorder(); onError("Recording would not start: ${e.message}") }
+        }
+    }
+
+    private fun abandonRecorder() { val was = recording; recording = false; runCatching { recorder?.release() }; recorder = null; if (was.not()) onRecordingEnded?.invoke(false) }
+
+    /** Stops recording and puts the preview back. [onStopped] gets true when a usable file was written (a recording stopped within a moment of starting has none). */
+    fun stopRecording(onStopped: (Boolean) -> Unit) {
+        Log.i(TAG, "stopRecording: recorder=$recorder recording=$recording")
+        val r = recorder
+        val camera = device
+        handler.post {
+            var ok = true
+            if (r != null) { try { r.stop() } catch (e: RuntimeException) { ok = false } ; runCatching { r.release() } }
+            recorder = null; recording = false
+            onRecordingEnded?.invoke(ok)
+            runCatching { session?.close() }; session = null
+            if (camera != null) startSession(camera, generation, onReady = { onStopped(ok) }, onError = { onStopped(false) }) else onStopped(false)
+        }
+    }
 
     /** The vendor-processed pipeline (Night, HDR): the extension owns the capture, so the session is configured differently and only a JPEG comes back. */
     private fun startExtensionSession(camera: CameraDevice, gen: Int, ext: Int, onReady: () -> Unit, onError: (String) -> Unit) {
@@ -321,6 +411,10 @@ class CameraController(private val context: Context) {
     }
 
     fun close() {
+        if (recording) {
+            val ok = runCatching { recorder?.stop() }.isSuccess
+            abandonRecorder(); onRecordingEnded?.invoke(ok)
+        }
         handler.removeCallbacks(afReset); repeatingTemplate = null
         generation++   // anything still opening is now stale
         runCatching { extensionSession?.close() }; extensionSession = null; extension = null
