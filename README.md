@@ -27,6 +27,11 @@ app/ui/              Glass-themed Compose screens
 
 JDK 21, Android SDK 36, Android 14+ (the Pixel 10a runs 17). Release signing comes from `HOLTZMAN_RELEASE_*` environment variables.
 
+## Suite integration
+
+- **Capture contract.** Another app starts `com.everettpenne.holtzman.action.CAPTURE` for a result (extra `com.everettpenne.holtzman.extra.MODE` = `photo` or `video`); the person takes the shot, Holtzman saves it as usual and returns its content address with read permission, then closes. Back returns cancelled. Nothing is captured without the person pressing the shutter. See `CaptureContract.kt`.
+- **Sietch.** 1.2.0 offers "Take a photo here" / "Record a video here" in any folder (copying the result into it), and long-pressing the last-photo button in Holtzman opens its folder in Sietch (`sietch://browse?path=...`, only paths inside storage).
+
 ## Permissions
 
 The camera. No location, no storage permission, no network, no microphone (video will ask in context).

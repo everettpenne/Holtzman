@@ -10,6 +10,14 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
 
+    <!-- Whether Sietch is installed, to offer "Show in Sietch" (nothing else about other apps is visible to Holtzman). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="sietch" />
+        </intent>
+    </queries>
+
     <application
         android:label="Holtzman"
         android:icon="@mipmap/ic_launcher"
@@ -28,6 +36,18 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The suite's capture contract: another app asks for one photo or video and gets it back (see CaptureContract). -->
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode">
+            <intent-filter>
+                <action android:name="com.everettpenne.holtzman.action.CAPTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
     </application>

@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -39,6 +40,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.everettpenne.glass.IosType
+import com.everettpenne.holtzman.CaptureContract
 import com.everettpenne.holtzman.camera.*
 import com.everettpenne.holtzman.save.PhotoSaver
 import com.everettpenne.holtzman.save.UltraHdr
@@ -53,15 +55,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun HoltzmanRoot() = HoltzmanTheme { CameraGate() }
+fun HoltzmanRoot(startInVideo: Boolean = false, onCaptured: ((android.net.Uri, String) -> Unit)? = null) = HoltzmanTheme { CameraGate(startInVideo, onCaptured) }
 
 /** Asks for the camera, in words, before anything else; the camera is the one permission the app has. */
 @Composable
-private fun CameraGate() {
+private fun CameraGate(startInVideo: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
     val context = LocalContext.current
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    if (granted) CameraScreen() else Box(Modifier.fillMaxSize().background(Color.Black).padding(32.dp), contentAlignment = Alignment.Center) {
+    if (granted) CameraScreen(startInVideo, onCaptured) else Box(Modifier.fillMaxSize().background(Color.Black).padding(32.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Icon(Icons.Rounded.PhotoCamera, null, tint = Holtzman.accent, modifier = Modifier.size(56.dp))
             Text("Holtzman needs the camera", style = IosType.title2, color = Color.White)
@@ -76,7 +78,7 @@ private fun CameraGate() {
 
 /** The camera: the picture at its true 4:3, a shutter, the other lens, RAW when the camera has it, and the probe. */
 @Composable
-private fun CameraScreen() {
+private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val controller = remember { CameraController(context) }
@@ -86,7 +88,7 @@ private fun CameraScreen() {
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
     var hdr by remember { mutableStateOf(false) }
-    var videoMode by remember { mutableStateOf(false) }
+    var videoMode by remember { mutableStateOf(startInVideo) }
     var recording by remember { mutableStateOf(false) }
     var elapsed by remember { mutableIntStateOf(0) }
     var quality by remember { mutableStateOf<VideoQuality?>(null) }
@@ -151,7 +153,7 @@ private fun CameraScreen() {
         controller.onRecordingEnded = { ok ->
             val v = pendingVideo; pendingVideo = null
             scope.launch(Dispatchers.Main) { recording = false }
-            if (v != null) scope.launch(Dispatchers.IO) { videoSaver.finish(v, ok); withContext(Dispatchers.Main) { if (ok) { lastVideo = v.uri; status = "Saved video" } else status = "Recording too short to keep" } }
+            if (v != null) scope.launch(Dispatchers.IO) { videoSaver.finish(v, ok); withContext(Dispatchers.Main) { if (ok) { lastVideo = v.uri; status = "Saved video"; onCaptured?.invoke(v.uri, "video/mp4") } else status = "Recording too short to keep" } }
         }
         onDispose { controller.onRecordingEnded = null }
     }
@@ -173,7 +175,7 @@ private fun CameraScreen() {
                 val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    saved.onSuccess { last = it; status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" } }.onFailure { status = "Couldn't save: ${it.message}" }
+                    saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" } }.onFailure { status = "Couldn't save: ${it.message}" }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
@@ -285,7 +287,7 @@ private fun CameraScreen() {
         // bottom: the last photo, the shutter, the other lens
         Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 28.dp, start = 32.dp, end = 32.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .12f)).clickable(enabled = if (videoMode) lastVideo != null else last != null) {
+            Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .12f)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
                 (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
             }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f)) }
             // the whole 84 dp circle is the button: the tap area is set before the ring's padding, so it does not shrink while recording
