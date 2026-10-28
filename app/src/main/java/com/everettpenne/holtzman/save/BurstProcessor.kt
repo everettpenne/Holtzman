@@ -34,7 +34,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val ref = IxBurst.sharpest(planes)
             val black = blackLevels(frames[ref].result, characteristics)
             Log.i("HoltzmanBurst", "reference $ref, black ${black.toList()}, iso ${frames[ref].result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY)}")
-            val merged: IxMerged = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(log = { Log.i("HoltzmanBurst", it) }))
+            val merged: IxMerged = IxBurst.merge(planes, ref, black, com.everettpenne.ix.mergeParamsForIso(frames[ref].result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 860) { Log.i("HoltzmanBurst", it) })
             Log.i("HoltzmanBurst", "merge done in ${(System.nanoTime() - started) / 1_000_000} ms")
             val base = captureBaseName(timeMillis, TimeZone.getDefault().getOffset(timeMillis).toLong())
             val mergedUri = saver.writeDng("${base}_burst.dng", timeMillis) { out -> writeMerged(out, characteristics, frames[ref], merged, orientation) }

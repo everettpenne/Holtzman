@@ -429,17 +429,23 @@ class CameraController(private val context: Context) {
      * (a merge needs equal frames). Each frame comes with its result (exposure, gains, lens-shading map, black levels). [onResult] gets the frames and
      * their results in order, on the camera thread; the caller owns the images and must close them all.
      */
-    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit) {
+    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null) {
         val camera = device ?: return onError("The camera is not open.")
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
         val auto = autoSample ?: return onError("Wait a moment for the exposure to settle.")
-        val n = BURST_FRAMES
+        val n = frames
+        // a fixed ISO is for calibration: the exposure time moves the other way so the picture is as bright as automatic exposure chose
+        val useIso = iso ?: auto.iso
+        val useNs = if (iso == null) auto.exposureNs else (auto.exposureNs.toDouble() * auto.iso / iso).toLong()
+        val isoRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val nsRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        if (iso != null && (isoRange?.contains(iso) != true || nsRange?.contains(useNs) != true)) return onError("ISO $iso needs an exposure of ${useNs / 1000} us, outside what this sensor allows.")
         try {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(raws.surface)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                set(CaptureRequest.SENSOR_EXPOSURE_TIME, auto.exposureNs); set(CaptureRequest.SENSOR_SENSITIVITY, auto.iso)
+                set(CaptureRequest.SENSOR_EXPOSURE_TIME, useNs); set(CaptureRequest.SENSOR_SENSITIVITY, useIso)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)   // focus stays where continuous AF last settled
                 set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
                 // no HAL noise reduction, sharpening or tone curve on a frame that will be merged: the merge is the noise reduction

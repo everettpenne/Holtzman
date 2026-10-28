@@ -42,7 +42,7 @@ internal class IxBand(val width: Int, maxRows: Int) {
 public class IxFlow(public val tilesX: Int, public val tilesY: Int, public val tileCells: Int, public val dx: IntArray, public val dy: IntArray)
 
 public class IxMergeParams(
-    /** Noise model of the RAW values: variance = [shot] * signal + [read]^2, in squared sensor counts. Defaults are a one-capture fit on a Pixel 10a back-camera burst (variance 1.5 * signal + 7.9 on its flattest tiles, so a slightly low estimate); they do not yet scale with ISO. */
+    /** Noise model of the RAW values: variance = [shot] * signal + [read]^2, in squared sensor counts. The defaults suit about ISO 860; [forIso] gives the Pixel 10a's back camera at any ISO. */
     public val shot: Float = 1.5f,
     public val read: Float = 3f,
     /** How many noise standard deviations apart two frames may be before the other frame stops contributing: higher merges more (and ghosts more). */
@@ -53,6 +53,14 @@ public class IxMergeParams(
     /** Progress and timing lines (the caller routes them to a log; the engine has no Android dependency). */
     public val log: (String) -> Unit = {},
 )
+
+/**
+ * The noise model of the Pixel 10a back camera at [iso], from two-frame photon-transfer measurements at ISO 99 to 3194 (docs/ix-pipeline.md): shot-noise
+ * gain 0.0017 per ISO unit (measured 0.00165 to 0.00185 across the range) and read variance about 1 + 5.2e-6 * iso^2 (measured 0.7 to 53).
+ * Another sensor needs its own measurement.
+ */
+public fun mergeParamsForIso(iso: Int, log: (String) -> Unit = {}): IxMergeParams =
+    IxMergeParams(shot = 0.0017f * iso, read = kotlin.math.sqrt(1f + 5.2e-6f * iso * iso), log = log)
 
 public class IxMerged(
     public val samples: ShortArray,

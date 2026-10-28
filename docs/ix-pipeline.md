@@ -104,3 +104,18 @@ The render stage now runs as two compute passes (counts to linear with shading; 
 | Whole burst, shutter to both JPEGs and DNGs saved | 8.5 s | 3.0 s (merge 1.3 s) |
 
 Equivalence check, run on every burst: 32 rows of the merged picture rendered by the CPU renderer and compared with the GPU's: largest channel difference 1 level, none beyond 1 (rounding). This burst was at ISO 117, a bright scene, not the ISO ~860 one the noise model was fitted on; 5.999 of 6 frames contributed per cell, so at low ISO the model is lenient. Shot noise scaling with ISO is still not modelled.
+
+## Noise calibration across ISO (Pixel 10a back camera, `NoiseCalibration`, two frames per ISO at equal brightness, dim indoor scene)
+
+Photon-transfer fit per ISO (variance = shot x signal + read variance, counts squared, from about 11,400 tiles each; bins are medians so texture does not bias them):
+
+| ISO | shot | shot / ISO | read variance |
+|---|---|---|---|
+| 99 | 0.184 | 0.00185 | 1.7 |
+| 200 | 0.347 | 0.00174 | 0.7 |
+| 399 | 0.672 | 0.00168 | 1.0 |
+| 799 | 1.362 | 0.00170 | 4.5 |
+| 1600 | 2.747 | 0.00172 | 11.8 |
+| 3194 | 5.281 | 0.00165 | 52.9 |
+
+Shot noise is linear in ISO (about 0.0017 per ISO unit). Read variance follows roughly 1 + 5.2e-6 x ISO^2. The earlier single-burst fit at about ISO 860 (shot 1.5, read variance 7.9) agrees with this model (1.46 and 4.8). The signal in these bins only reaches about 86 counts (the scene was dim), so the read variance at low ISO is the least certain figure. The merge now uses `mergeParamsForIso` from each burst's reference-frame ISO.

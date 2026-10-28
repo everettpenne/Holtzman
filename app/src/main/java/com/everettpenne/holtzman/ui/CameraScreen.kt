@@ -43,6 +43,7 @@ import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.CaptureContract
 import com.everettpenne.holtzman.camera.*
 import com.everettpenne.holtzman.save.BurstProcessor
+import com.everettpenne.holtzman.save.NoiseCalibration
 import com.everettpenne.holtzman.save.PhotoSaver
 import com.everettpenne.holtzman.save.UltraHdr
 import com.everettpenne.holtzman.save.VideoSaver
@@ -181,6 +182,24 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
     }
 
+    // Calibration for the burst merge's noise model: two frames at each of several ISOs, same brightness, phone held still on a still scene
+    fun calibrateNoise() {
+        if (busy) return
+        busy = true; status = "Calibrating: keep the phone still"
+        val chars = controller.characteristics ?: run { busy = false; return }
+        val steps = listOf(100, 200, 400, 800, 1600, 3200)
+        fun next(i: Int) {
+            if (i >= steps.size) { scope.launch(Dispatchers.Main) { busy = false; status = "Calibration done (see the log)" }; return }
+            controller.captureBurst(onResult = { frames ->
+                scope.launch(Dispatchers.Default) {
+                    runCatching { NoiseCalibration.measure(frames, chars) }.onFailure { android.util.Log.w("HoltzmanNoise", "iso ${steps[i]}: $it") }
+                    next(i + 1)
+                }
+            }, onError = { android.util.Log.w("HoltzmanNoise", "iso ${steps[i]}: $it"); next(i + 1) }, frames = 2, iso = steps[i])
+        }
+        next(0)
+    }
+
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
         if (burst) { shootBurst(); return }
@@ -262,6 +281,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         // top: the probe, and what the camera is saying
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
+            if (burst) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Calibrate noise") { calibrateNoise() } }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
