@@ -54,7 +54,7 @@ object ProbeCollector {
             yuvMax = sizes(ImageFormat.YUV_420_888).firstOrNull(),
             extensions = extensions,
             tenBitProfiles = profiles,
-            maxZoomRatio = zoom?.let { "%.1f".format(java.util.Locale.ROOT, it.upper) },
+            maxZoomRatio = zoom?.let { "%.1f to %.1f".format(java.util.Locale.ROOT, it.lower, it.upper) },
             pipelineMaxDepth = c.get(CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH)?.toInt(),
             maxRawOutputs = c.get(CameraCharacteristics.REQUEST_MAX_NUM_OUTPUT_RAW),
             reprocessing = reprocessing,

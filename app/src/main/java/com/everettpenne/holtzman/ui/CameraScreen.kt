@@ -11,7 +11,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -76,6 +79,9 @@ private fun CameraScreen() {
     var raw by remember { mutableStateOf(false) }
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var zoomRange by remember { mutableStateOf(1f..1f) }
+    var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
     var surfaceReady by remember { mutableStateOf<SurfaceHolder?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -86,6 +92,7 @@ private fun CameraScreen() {
     // a lens without Night turns Night off
     LaunchedEffect(nightAvailable) { if (!nightAvailable) night = false }
     val nightExtension = if (night && nightAvailable) android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT else null
+    LaunchedEffect(lens, nightExtension) { zoom = 1f }
     val previewShape = remember(lens, nightExtension) { controller.previewSizeFor(lens, nightExtension) }
 
     // the phone's tilt, for the saved picture's orientation
@@ -106,8 +113,9 @@ private fun CameraScreen() {
         val surface = surfaceReady?.surface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { surfaceReady?.setFixedSize(it.width, it.height) }
-        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
+    LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
 
     fun shoot(highQuality: Boolean = false) {
@@ -143,6 +151,15 @@ private fun CameraScreen() {
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio),
             )
         }
+        // Touch on the picture: tap to focus (and meter) there, pinch to zoom. The same box as the preview, drawn over it.
+        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)
+            .pointerInput(Unit) { detectTapGestures { p -> focusPoint = p; controller.focusAt(p.x / size.width, p.y / size.height) } }
+            .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }) {
+            focusPoint?.let { p ->
+                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x - 36.dp.toPx()).toInt(), (p.y - 36.dp.toPx()).toInt()) }.size(72.dp)
+                    .border(2.dp, Holtzman.accent, RoundedCornerShape(10.dp)))
+            }
+        }
 
         // top: the probe, and what the camera is saying
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -155,6 +172,19 @@ private fun CameraScreen() {
         }
         status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
             .background(Color.Black.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) }
+
+        // zoom: the stops the camera offers, and the ratio now applied
+        Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 140.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            zoomStops(zoomRange.start, zoomRange.endInclusive).forEach { stop ->
+                val on = kotlin.math.abs(zoom - stop) < 0.05f
+                Text(if (stop == 1f) "1×" else if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}×", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (on) Holtzman.accent else Color.White,
+                    modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .5f)).clickable { zoom = controller.setZoom(stop) }.padding(horizontal = 14.dp, vertical = 9.dp))
+            }
+            if (zoomStops(zoomRange.start, zoomRange.endInclusive).none { kotlin.math.abs(zoom - it) < 0.05f })
+                Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Holtzman.accent,
+                    modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .5f)).padding(horizontal = 14.dp, vertical = 9.dp))
+        }
 
         // bottom: the last photo, the shutter, the other lens
         Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 28.dp, start = 32.dp, end = 32.dp),

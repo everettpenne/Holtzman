@@ -80,3 +80,40 @@ fun trimJpeg(bytes: ByteArray): ByteArray {
 /** The EXIF orientation value for a rotation of 0, 90, 180 or 270 degrees clockwise (1, 6, 3, 8). */
 fun exifOrientationFor(degrees: Int): Int = when (((degrees % 360) + 360) % 360) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 }
 
+
+/**
+ * Where a tap on the upright preview lands on the sensor, as a fraction of the sensor's active array (0..1 each way). [u] and [v] are the tap as a
+ * fraction of the preview's width (left to right) and height (top to bottom). A sensor mounted at 90 degrees is turned a quarter to look upright, so
+ * the axes swap; the zoom crops a centred window, which the tap has to be mapped back out of.
+ */
+fun sensorPoint(u: Float, v: Float, sensorOrientation: Int, zoom: Float): Pair<Float, Float> {
+    val (sx, sy) = when (((sensorOrientation % 360) + 360) % 360) {
+        90 -> v to 1f - u
+        180 -> 1f - u to 1f - v
+        270 -> 1f - v to u
+        else -> u to v
+    }
+    val z = zoom.coerceAtLeast(1f)
+    return (0.5f + (sx - 0.5f) / z).coerceIn(0f, 1f) to (0.5f + (sy - 0.5f) / z).coerceIn(0f, 1f)
+}
+
+/** A square metering area (left, top, right, bottom in active-array pixels) of [fraction] of the shorter side, centred on the point and kept inside the array. */
+fun meteringBox(point: Pair<Float, Float>, arrayWidth: Int, arrayHeight: Int, fraction: Float = 0.12f): IntArray {
+    val half = (minOf(arrayWidth, arrayHeight) * fraction / 2f).toInt().coerceAtLeast(1)
+    val cx = (point.first * arrayWidth).toInt().coerceIn(half, arrayWidth - half)
+    val cy = (point.second * arrayHeight).toInt().coerceIn(half, arrayHeight - half)
+    return intArrayOf(cx - half, cy - half, cx + half, cy + half)
+}
+
+/** A zoom ratio kept inside what the camera offers. */
+fun clampZoom(ratio: Float, min: Float, max: Float): Float = if (ratio.isNaN()) min.coerceAtLeast(1f).coerceAtMost(max) else ratio.coerceIn(min, max)
+
+/**
+ * The zoom shortcuts worth offering for a camera whose range is [min]..[max]: the widest it goes when that is below 1x (the Pixel 10a's logical
+ * camera reaches 0.56x, its ultrawide lens; a fixed 0.5x would be out of range), then 1x and 2x when it can.
+ */
+fun zoomStops(min: Float, max: Float): List<Float> = buildList {
+    if (min < 0.95f) add(min)
+    add(1f)
+    if (2f <= max) add(2f)
+}

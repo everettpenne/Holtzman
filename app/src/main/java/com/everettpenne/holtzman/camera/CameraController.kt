@@ -58,6 +58,15 @@ class CameraController(private val context: Context) {
     /** The vendor extension in use (CameraExtensionCharacteristics.EXTENSION_*), or null for the normal pipeline. */
     var extension: Int? = null; private set
 
+    /** The zoom now applied (1.0 is the main lens; below 1 uses the ultrawide on a logical camera), and the range the camera offers. */
+    var zoom: Float = 1f; private set
+    var zoomMin: Float = 1f; private set
+    var zoomMax: Float = 1f; private set
+    private var focusRegion: IntArray? = null
+    private var zoomSupportedInExtension = false
+    private var repeatingTemplate: CaptureRequest.Builder? = null
+    private val afReset = Runnable { clearFocus() }
+
     var characteristics: CameraCharacteristics? = null; private set
     var cameraId: String? = null; private set
     var previewSize: Dim? = null; private set
@@ -113,6 +122,9 @@ class CameraController(private val context: Context) {
         val raw = if (extension == null && wantRaw && chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true)
             map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }?.let { Dim(it.width, it.height) } else null
 
+        val zr = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+        zoomMin = zr?.lower ?: 1f; zoomMax = zr?.upper ?: 1f; zoom = clampZoom(1f, zoomMin, zoomMax); focusRegion = null
+        zoomSupportedInExtension = extension != null && runCatching { manager.getCameraExtensionCharacteristics(id).getAvailableCaptureRequestKeys(extension).contains(CaptureRequest.CONTROL_ZOOM_RATIO) }.getOrDefault(false)
         characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension
         jpegReader = ImageReader.newInstance(still.width, still.height, ImageFormat.JPEG, 3)
         rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 3) }
@@ -135,11 +147,8 @@ class CameraController(private val context: Context) {
                 if (gen != generation) { s.close(); return }
                 session = s
                 try {
-                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                        addTarget(previewSurface!!)
-                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                    }.build()
+                    repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }
+                    val request = previewRequest()
                     s.setRepeatingRequest(request, null, handler)
                     onReady()
                 } catch (e: Exception) { onError("The preview would not start: ${e.message}") }
@@ -147,6 +156,69 @@ class CameraController(private val context: Context) {
             override fun onConfigureFailed(s: CameraCaptureSession) { if (gen == generation) onError("The camera could not be configured.") }
         }, handler)
     }
+
+    /** The repeating preview request with the zoom and focus area now wanted. */
+    private fun previewRequest(): CaptureRequest {
+        val b = repeatingTemplate!!
+        if (extension == null || zoomSupportedInExtension) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
+        if (extension == null) {
+            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            val r = focusRegion
+            if (r != null) {
+                val area = arrayOf(android.hardware.camera2.params.MeteringRectangle(r[0], r[1], r[2] - r[0], r[3] - r[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX))
+                b.set(CaptureRequest.CONTROL_AF_REGIONS, area); b.set(CaptureRequest.CONTROL_AE_REGIONS, area)
+            } else { b.set(CaptureRequest.CONTROL_AF_REGIONS, null); b.set(CaptureRequest.CONTROL_AE_REGIONS, null) }
+        }
+        return b.build()
+    }
+
+    private fun resend() {
+        if (repeatingTemplate == null) return
+        handler.post {
+            try {
+                session?.setRepeatingRequest(previewRequest(), null, handler)
+                extensionSession?.setRepeatingRequest(previewRequest(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+            } catch (e: Exception) { Log.w(TAG, "could not update the preview", e) }
+        }
+    }
+
+    /** Sets the zoom (clamped to what the camera offers) and returns what was applied. Below 1x a logical camera hands over to its ultrawide lens. */
+    fun setZoom(ratio: Float): Float {
+        zoom = clampZoom(ratio, zoomMin, zoomMax)
+        resend()
+        return zoom
+    }
+
+    /**
+     * Focuses and meters on a point of the upright preview ([u], [v] as fractions of its width and height): the area is set on the preview, an
+     * autofocus scan is triggered once, and after a few seconds the camera goes back to continuous focus on the whole frame. The vendor
+     * extensions choose their own focus, so this does nothing there.
+     */
+    fun focusAt(u: Float, v: Float) {
+        val chars = characteristics ?: return
+        val s = session ?: return
+        val device = device ?: return
+        if (extension != null) return
+        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val z = zoom
+        val mapped = sensorPoint(u, v, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, z)
+        focusRegion = meteringBox(mapped, array.width(), array.height()).let { intArrayOf(it[0] + array.left, it[1] + array.top, it[2] + array.left, it[3] + array.top) }
+        resend()
+        handler.post {
+            try {
+                val trigger = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                    addTarget(previewSurface!!)
+                    set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                    set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
+                }.build()
+                s.capture(trigger, null, handler)
+            } catch (e: Exception) { Log.w(TAG, "focus trigger failed", e) }
+        }
+        handler.removeCallbacks(afReset); handler.postDelayed(afReset, 3500)
+    }
+
+    private fun clearFocus() { focusRegion = null; resend() }
 
     /** The vendor-processed pipeline (Night, HDR): the extension owns the capture, so the session is configured differently and only a JPEG comes back. */
     private fun startExtensionSession(camera: CameraDevice, gen: Int, ext: Int, onReady: () -> Unit, onError: (String) -> Unit) {
@@ -156,8 +228,8 @@ class CameraController(private val context: Context) {
                 if (gen != generation) { session.close(); return }
                 extensionSession = session
                 try {
-                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }.build()
-                    session.setRepeatingRequest(request, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+                    repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }
+                    session.setRepeatingRequest(previewRequest(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
                     onReady()
                 } catch (e: Exception) { onError("The preview would not start: ${e.message}") }
             }
@@ -169,7 +241,7 @@ class CameraController(private val context: Context) {
     private fun captureWithExtension(session: CameraExtensionSession, camera: CameraDevice, orientation: Int, chars: CameraCharacteristics, onResult: (StillResult) -> Unit, onError: (String) -> Unit) {
         val jpegs = jpegReader ?: return
         try {
-            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply { addTarget(jpegs.surface); set(CaptureRequest.JPEG_ORIENTATION, orientation) }.build()
+            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply { addTarget(jpegs.surface); set(CaptureRequest.JPEG_ORIENTATION, orientation); if (zoomSupportedInExtension) set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom) }.build()
             val gather = Gather(wantRaw = false, needsResult = false) { jpeg, _ -> onResult(StillResult(jpeg, orientation, null, System.currentTimeMillis(), chars, "night", needsExifOrientation = true)) }
             jpegs.setOnImageAvailableListener({ r -> r.acquireNextImage()?.use { image -> gather.jpeg(image.planes[0].buffer.let { b -> ByteArray(b.remaining()).also { b.get(it) }.let(::trimJpeg) }) } }, handler)
             session.capture(request, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {
@@ -198,6 +270,7 @@ class CameraController(private val context: Context) {
                 raws?.let { addTarget(it.surface) }
                 set(CaptureRequest.JPEG_ORIENTATION, orientation)
                 set(CaptureRequest.JPEG_QUALITY, 97.toByte())
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 if (highQuality) {
@@ -225,6 +298,7 @@ class CameraController(private val context: Context) {
     }
 
     fun close() {
+        handler.removeCallbacks(afReset); repeatingTemplate = null
         generation++   // anything still opening is now stale
         runCatching { extensionSession?.close() }; extensionSession = null; extension = null
         runCatching { session?.close() }; session = null

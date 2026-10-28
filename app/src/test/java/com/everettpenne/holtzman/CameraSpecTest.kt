@@ -59,4 +59,27 @@ class CameraSpecTest {
     @Test fun exifOrientationValues() {
         assertEquals(1, exifOrientationFor(0)); assertEquals(6, exifOrientationFor(90)); assertEquals(3, exifOrientationFor(180)); assertEquals(8, exifOrientationFor(270)); assertEquals(8, exifOrientationFor(-90))
     }
+
+    @Test fun aTapMapsToTheSensorThroughItsMounting() {
+        fun near(a: Pair<Float, Float>, x: Float, y: Float) { assertEquals(x, a.first, 0.001f); assertEquals(y, a.second, 0.001f) }
+        near(sensorPoint(0.5f, 0.5f, 90, 1f), 0.5f, 0.5f)
+        // back camera (sensor turned 90): the top-left of the upright view is the sensor's bottom-left... a tap at the top (v=0) is the sensor's left edge
+        near(sensorPoint(0.5f, 0f, 90, 1f), 0f, 0.5f); near(sensorPoint(1f, 0.5f, 90, 1f), 0.5f, 0f)
+        near(sensorPoint(0.5f, 0f, 270, 1f), 1f, 0.5f); near(sensorPoint(1f, 0.5f, 270, 1f), 0.5f, 1f)
+        near(sensorPoint(0f, 0f, 0, 1f), 0f, 0f); near(sensorPoint(0f, 0f, 180, 1f), 1f, 1f)
+        // zoomed in 2x the visible window is the middle half: a tap at the view's edge is a quarter in from the sensor's edge
+        near(sensorPoint(0f, 0.5f, 0, 2f), 0.25f, 0.5f); near(sensorPoint(1f, 0.5f, 0, 2f), 0.75f, 0.5f)
+    }
+
+    @Test fun meteringBoxStaysInsideTheArray() {
+        val r = meteringBox(0.5f to 0.5f, 4000, 3000)
+        assertEquals(360, r[2] - r[0]); assertEquals(360, r[3] - r[1]); assertEquals(2000, (r[0] + r[2]) / 2)
+        val edge = meteringBox(0f to 0f, 4000, 3000); assertTrue(edge[0] >= 0 && edge[1] >= 0)
+        val far = meteringBox(1f to 1f, 4000, 3000); assertTrue(far[2] <= 4000 && far[3] <= 3000)
+    }
+
+    @Test fun zoomIsClampedAndStopsFollowTheRange() {
+        assertEquals(0.5f, clampZoom(0.1f, 0.5f, 8f)); assertEquals(8f, clampZoom(20f, 0.5f, 8f)); assertEquals(2.5f, clampZoom(2.5f, 0.5f, 8f)); assertEquals(1f, clampZoom(Float.NaN, 1f, 8f))
+        assertEquals(listOf(0.5556f, 1f, 2f), zoomStops(0.5556f, 8f)); assertEquals(listOf(1f, 2f), zoomStops(1f, 8f)); assertEquals(listOf(1f), zoomStops(1f, 1.5f)); assertEquals(listOf(1f, 2f), zoomStops(0.97f, 10f))
+    }
 }
