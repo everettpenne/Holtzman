@@ -180,7 +180,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         controller.focusForShot { controller.captureBurst(onResult = { frames ->
             scope.launch(Dispatchers.Default) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis(), saveDng = raw, saveReference = compare, ultraHdr = hdr) }
+                val tShot = System.currentTimeMillis()
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr) }
+                if (context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("keepRaw", false) || com.everettpenne.holtzman.save.DebugFlags.on("keepraw")) {
+                    runCatching {
+                        val name = com.everettpenne.holtzman.camera.captureBaseName(tShot, java.util.TimeZone.getDefault().getOffset(tShot).toLong())
+                        val processing = org.json.JSONObject().put("hdr", hdr).put("raw", raw).put("pipeline", "burst").put("debugSwitches", com.everettpenne.holtzman.save.DebugFlags.raw)
+                        com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).saveTakenBurst(frames, name, orientation, tShot, processing)
+                    }.onFailure { android.util.Log.w("HoltzmanBurst", "could not keep the raw burst", it) }
+                }
                 withContext(Dispatchers.Main) {
                     busy = false
                     outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }

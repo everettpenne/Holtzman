@@ -121,6 +121,32 @@ class DatasetCapture(private val controller: CameraController, private val saver
         return scene
     }
 
+    /**
+     * Saves the frames of a burst that has already been taken and processed (a normal photo) as a dataset scene named after the photo, so a picture
+     * that came out strangely can be re-run offline from exactly its frames. Call off the main thread; the frames' buffers must still be alive.
+     */
+    fun saveTakenBurst(frames: List<BurstFrame>, photoName: String, orientation: Int, timeMillis: Long, processing: JSONObject) {
+        val chars = controller.characteristics ?: return
+        val scene = "photo_$photoName"
+        val folder = "Dataset/$scene"
+        val files = JSONArray()
+        frames.forEachIndexed { i, f ->
+            f.pixels.rewind()
+            val name = "frame_%03d.dng".format(i)
+            saver.writeDocument(folder, name, "image/x-adobe-dng", timeMillis) { out ->
+                DngCreator(chars, f.result).use { it.setOrientation(PhotoSaver.exifOrientation(orientation)); it.writeByteBuffer(out, Size(f.width, f.height), f.pixels, 0) }
+            }
+            files.put(frameJson(name, "burst", f, chars))
+        }
+        val meta = JSONObject().apply {
+            put("scene", scene); put("kind", "PHOTO"); put("tags", JSONArray(listOf("kept with a normal photo"))); put("note", "frames of the picture $photoName.jpg")
+            put("startedAt", timeMillis); put("device", "${Build.MANUFACTURER} ${Build.MODEL}"); put("app", "Holtzman kept burst 1")
+            put("zoom", controller.zoom.toDouble()); put("orientationDegrees", orientation); put("thermalStatus", thermal())
+            put("processing", processing); put("frames", files); put("complete", true)
+        }
+        saver.writeDocument(folder, "meta.json", "application/json", timeMillis) { it.write(meta.toString(2).toByteArray()) }
+    }
+
     private fun thermal(): Int = runCatching { (context.getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus }.getOrDefault(-1)
 
     private fun frameJson(name: String, group: String, f: BurstFrame, chars: CameraCharacteristics): JSONObject {

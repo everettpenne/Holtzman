@@ -19,11 +19,26 @@ fun main(args: Array<String>) {
         val p = parse(File(dir, "params.json").readText())
         val w = p.getValue("width").toInt(); val h = p.getValue("height").toInt(); val n = p.getValue("frames").toInt()
         val black = IntArray(4) { Math.round(p.getValue("black$it")).toInt() }
-        val planes = (0 until n).map { i ->
+        val planes0 = (0 until n).map { i ->
             val bytes = File(dir, "frame_$i.raw").readBytes()
             IxPlane(ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer(), w, h)
         }
-        val iso = p.getValue("iso").toInt()
+        val planes = ArrayList<IxPlane>(planes0)
+        var iso = p.getValue("iso").toInt()
+        System.getProperty("harness.isoNoise")?.toInt()?.let { target ->
+            // pretend the frames were taken at a higher ISO: add the extra signal-dependent noise that ISO would have (shot 0.0017 per ISO unit, read variance 1 + 5.2e-6 iso^2)
+            val have = mergeParamsForIso(iso); val want = mergeParamsForIso(target)
+            val rnd = java.util.Random(7)
+            val shotX = want.shot - have.shot; val readX = want.read * want.read - have.read * have.read
+            for ((fi, pl) in planes.withIndex()) {
+                val row = ShortArray(w); val buf = ShortArray(w * h)
+                for (y in 0 until h) { pl.readRows(y, 1, row); for (x in 0 until w) {
+                    val v = (row[x].toInt() and 0xFFFF); val sig = maxOf(v - black[(x and 1) + 2 * (y and 1)], 0)
+                    val nv = v + rnd.nextGaussian() * Math.sqrt((shotX * sig + readX).toDouble()); buf[y * w + x] = nv.toInt().coerceIn(0, 65535).toShort() } }
+                planes[fi] = IxPlane(java.nio.ShortBuffer.wrap(buf), w, h)
+            }
+            iso = target
+        }
         val ref = IxBurst.sharpest(planes)
         val cells = StringBuilder()
         val white = p.getValue("white").toFloat() - black.average().toFloat()
@@ -35,6 +50,11 @@ fun main(args: Array<String>) {
             val params = IxMergeParams(base.shot, base.read, full, none)
             val t0 = System.nanoTime()
             val merged = IxBurst.merge(planes, ref, black, params)
+            System.getProperty("harness.dump")?.let { out ->
+                // the merged mosaic of this rule, to look at (tools/prototypes/look.py renders it)
+                val bb = ByteBuffer.allocate(merged.samples.size * 2).order(ByteOrder.LITTLE_ENDIAN); bb.asShortBuffer().put(merged.samples)
+                File(dir, "merged_$variant.raw").writeBytes(bb.array())
+            }
             val ms = (System.nanoTime() - t0) / 1_000_000
             val refNoise = noise(planes[ref], w, h); val mergedNoise = noise(IxPlane(java.nio.ShortBuffer.wrap(merged.samples), w, h), w, h)
             cells.append(" | %-28s".format("%.2f frames, noise /%.2f, %dms".format(merged.meanFrames, refNoise / mergedNoise, ms)))

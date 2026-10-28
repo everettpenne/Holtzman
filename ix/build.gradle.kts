@@ -27,4 +27,6 @@ tasks.register<JavaExec>("harness") {
     mainClass.set("com.everettpenne.ix.HarnessKt")
     args = listOf(project.findProperty("data")?.toString() ?: "")
     jvmArgs("-Xmx6g")
+    if (project.hasProperty("dump")) systemProperty("harness.dump", "1")
+    if (project.hasProperty("isoNoise")) systemProperty("harness.isoNoise", project.property("isoNoise").toString())
 }

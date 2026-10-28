@@ -52,6 +52,12 @@ fun ProbeSheet(onDismiss: () -> Unit, onCompare: () -> Unit) {
                 compare = !compare
                 context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).edit().putBoolean("compare", compare).apply()
             }, Modifier.fillMaxWidth(), prominent = false)
+            var keep by remember { mutableStateOf(context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("keepRaw", false)) }
+            GlassButton("Keep the raw burst with every photo: ${if (keep) "on" else "off"}", {
+                keep = !keep
+                context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).edit().putBoolean("keepRaw", keep).apply()
+            }, Modifier.fillMaxWidth(), prominent = false)
+            if (keep) Text("About 140 MB per photo, in Documents/Holtzman/Dataset/photo_*. Turn it off when you are done.", style = IosType.footnote)
             GlassButton("Test the Tensor accelerators", {
                 spike = "Running…"
                 scope.launch(kotlinx.coroutines.Dispatchers.Default) { val t = AcceleratorSpike.text(AcceleratorSpike.run(context)); android.util.Log.i("HoltzmanSpike", t); spike = t }
