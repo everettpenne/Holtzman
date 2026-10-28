@@ -97,6 +97,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var datasetKind by remember { mutableStateOf(com.everettpenne.holtzman.save.DatasetKind.HANDHELD) }
     var datasetTags by remember { mutableStateOf(setOf<String>()) }
     var datasetNote by remember { mutableStateOf("") }
+    var datasetSaved by remember { mutableIntStateOf(0) }
     var videoMode by remember { mutableStateOf(startInVideo) }
     var recording by remember { mutableStateOf(false) }
     var elapsed by remember { mutableIntStateOf(0) }
@@ -169,7 +170,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(recording) { elapsed = 0; while (recording) { delay(1000); elapsed++ } }
     LaunchedEffect(videoMode) { if (videoMode && !audioGranted) askAudio.launch(android.Manifest.permission.RECORD_AUDIO) }
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
-    LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
+    LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
 
     fun shootBurst() {
         if (busy) return
@@ -227,7 +228,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             }
             withContext(Dispatchers.Main) {
                 busy = false
-                outcome.onSuccess { status = "Saved ${it.removePrefix("scene_")}" }.onFailure { status = "Dataset capture failed: ${it.message}"; android.util.Log.w("HoltzmanDataset", it) }
+                outcome.onSuccess { datasetSaved++; status = "Saved ${it.removePrefix("scene_")} (${datasetSaved} this session)  ·  Files: Documents/Holtzman/Dataset" }.onFailure { status = "Dataset capture failed: ${it.message}"; android.util.Log.w("HoltzmanDataset", it) }
             }
         }
     }
@@ -320,7 +321,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
                 if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) dataset = false }
-                if (!videoMode && !night) Chip("DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
+                if (!videoMode && !night) Chip(if (dataset && datasetSaved > 0) "DATA $datasetSaved" else "DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
                 if (!videoMode && !night && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
                 if (!videoMode && !night && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
@@ -387,7 +388,7 @@ private fun Pill(icon: androidx.compose.ui.graphics.vector.ImageVector, descript
 
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White,
+    Text(label, maxLines = 1, softWrap = false, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White,
         modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) Holtzman.accent else Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp))
 }
 

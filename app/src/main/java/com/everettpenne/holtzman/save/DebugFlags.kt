@@ -7,6 +7,11 @@ package com.everettpenne.holtzman.save
  * tone mapping), noauto (the fixed tone curve instead of the adaptive one), nofinish (the plain sharpen pass instead of the noise-aware finish), nograin.
  */
 object DebugFlags {
-    @Volatile var raw: String = ""
+    @Volatile private var stored: String = ""
+    @Volatile private var setAt = 0L
+    /** The switches in force. They lapse ten minutes after they were set, so a switch left over from a test does not keep changing what the camera saves. */
+    var raw: String
+        get() = if (System.currentTimeMillis() - setAt > 10 * 60 * 1000L) "" else stored
+        set(v) { stored = v; setAt = System.currentTimeMillis() }
     fun on(name: String): Boolean = raw.split(',').any { it.trim() == name }
 }

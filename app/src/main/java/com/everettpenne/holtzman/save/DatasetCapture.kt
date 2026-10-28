@@ -54,6 +54,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
         val folder = "Dataset/$scene"
         val files = JSONArray()
         var written = 0
+        var first: BurstFrame? = null
 
         fun save(frame: BurstFrame, name: String, group: String) {
             frame.pixels.rewind()
@@ -64,6 +65,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
                 }
             }
             files.put(frameJson(name, group, frame, chars))
+            if (first == null) first = frame
             written++
         }
 
@@ -101,6 +103,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
 
         } catch (t: Throwable) { failure = t }
 
+        first?.let { progress("Making a preview…"); writePreview(it, folder, orientation, started) }
         val meta = JSONObject().apply {
             put("scene", scene); put("kind", kind.name); put("tags", JSONArray(tags.sorted())); put("note", note)
             put("startedAt", started); put("finishedAt", System.currentTimeMillis())
@@ -138,6 +141,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
             }
             files.put(frameJson(name, "burst", f, chars))
         }
+        frames.firstOrNull()?.let { writePreview(it, folder, orientation, timeMillis) }
         val meta = JSONObject().apply {
             put("scene", scene); put("kind", "PHOTO"); put("tags", JSONArray(listOf("kept with a normal photo"))); put("note", "frames of the picture $photoName.jpg")
             put("startedAt", timeMillis); put("device", "${Build.MANUFACTURER} ${Build.MODEL}"); put("app", "Holtzman kept burst 1")
@@ -145,6 +149,34 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("processing", processing); put("frames", files); put("complete", true)
         }
         saver.writeDocument(folder, "meta.json", "application/json", timeMillis) { it.write(meta.toString(2).toByteArray()) }
+    }
+
+    /**
+     * A small picture of what a scene holds, rendered from one of its frames with the app's own pipeline and saved beside the DNGs as preview.jpg,
+     * so the Files app shows what was captured (a DNG has no thumbnail there). Failure is not fatal: the frames are what matter.
+     */
+    private fun writePreview(frame: BurstFrame, folder: String, orientation: Int, timeMillis: Long) {
+        val chars = controller.characteristics ?: return
+        runCatching {
+            GlContext().use { gl ->
+                GpuRender(gl, ownsContext = false).use { gpu ->
+                    frame.pixels.rewind()
+                    val raw = ShortArray(frame.width * frame.height).also { frame.pixels.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer().get(it) }
+                    val dynamic = frame.result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                    val pattern = chars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
+                    val black = IntArray(4) { i -> dynamic?.getOrNull(i)?.toInt() ?: pattern?.getOffsetForIndex(i and 1, i shr 1) ?: 64 }
+                    val settings = BurstRender.settings(frame.result, chars, black)
+                    val exposure = com.everettpenne.ix.IxRender.autoExposure(raw, frame.width, frame.height, settings, BurstRender.EXPOSURE_TARGET)
+                    val full = gpu.toBitmap(raw, frame.width, frame.height, settings, exposure)
+                    val m = android.graphics.Matrix().apply { postRotate(orientation.toFloat()) }
+                    val small = android.graphics.Bitmap.createScaledBitmap(full, frame.width / 3, frame.height / 3, true)
+                    full.recycle()
+                    val upright = android.graphics.Bitmap.createBitmap(small, 0, 0, small.width, small.height, m, true)
+                    saver.writeDocument(folder, "preview.jpg", "image/jpeg", timeMillis) { out -> upright.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out) }
+                    small.recycle(); upright.recycle()
+                }
+            }
+        }.onFailure { android.util.Log.w("HoltzmanDataset", "no preview for $folder", it) }
     }
 
     private fun thermal(): Int = runCatching { (context.getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus }.getOrDefault(-1)
