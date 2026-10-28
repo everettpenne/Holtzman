@@ -1,0 +1,69 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release signing comes from the environment, never from the repository: HOLTZMAN_RELEASE_STORE_FILE, _STORE_PASSWORD, _KEY_ALIAS, _KEY_PASSWORD.
+val signingEnv = listOf("STORE_FILE", "STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD").associateWith { System.getenv("HOLTZMAN_RELEASE_$it")?.takeIf(String::isNotBlank) }
+val canSign = signingEnv.values.all { it != null }
+
+android {
+    namespace = "com.everettpenne.holtzman"
+    compileSdk = 36
+    defaultConfig {
+        applicationId = "com.everettpenne.holtzman"
+        // The Pixel 10a first: Android 16. Older Pixels at API 33+ should work; nothing below is promised.
+        minSdk = 33
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
+        }
+        if (canSign) create("release") {
+            storeFile = file(signingEnv.getValue("STORE_FILE")!!)
+            storePassword = signingEnv.getValue("STORE_PASSWORD"); keyAlias = signingEnv.getValue("KEY_ALIAS"); keyPassword = signingEnv.getValue("KEY_PASSWORD")
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            if (canSign) signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        getByName("debug") { applicationIdSuffix = ".dev" }
+    }
+    buildFeatures { compose = true; buildConfig = true }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    testOptions { unitTests.isReturnDefaultValues = true }
+}
+
+dependencies {
+    implementation(project(":ix"))
+    implementation(platform("androidx.compose:compose-bom:2025.06.01"))
+    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    // The suite's liquid-glass kit (theme, type, controls): ../Glass, via includeBuild.
+    implementation("com.everettpenne:glass")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+}
