@@ -86,3 +86,10 @@ Two separate causes, found in order:
 2. **The phone refuses the compile.** Log: `libedgetpu_client: Compile failed, error code 16, message: Current application should not be allowed to access EdgeTPU.` This comes from the Edge TPU service on the device, not from LiteRT or from the model, and LiteRT then falls back to the CPU without telling the app (hence the identical outputs). So the model is NPU-compatible; this app is not permitted to use the NPU. Whether the check is a package/signature allowlist or something GrapheneOS-specific is **not established**; the message does not say.
 
 Consequence: an ahead-of-time compile on the Mac would not obviously help, since the refusal is about the app, not about where the model was compiled (not tried). The GPU stays the shipping accelerator. Also worth knowing: the app must not treat "NPU offered" as "NPU used"; check the output or the log.
+
+### What others have found (searched 2026-10-27)
+
+- LiteRT issue #11251 (https://github.com/google-ai-edge/LiteRT/issues/11251) reports exactly our log on a Pixel 10 Pro (Tensor G5, Android 17): the Edge TPU service answers "not in the EdgeTPU allowed list or signature mismatched" (error 16), `CompiledModel.create()` succeeds, and the model silently runs on XNNPACK. A LiteRT maintainer replied that on-device compilation on Google Tensor is experimental and not released, so access is limited; they suggested ahead-of-time (AOT) compilation instead. The reporter ran an AOT-compiled model on the TPU from the same, non-allowlisted app.
+- So the refusal is a Google-side allowlist on on-device (JIT) compilation, not a GrapheneOS setting and not our model. AOT-compiled models are not subject to it.
+- The route to AOT is the Google Tensor SDK Beta (sign-up form; Linux x86_64 with Bazel). Its documentation lists Tensor G5 and G6 only; the Pixel 10a's chip is not named there, so whether AOT works on it is unknown.
+- GrapheneOS has a "Special app access" toggle for Google apps' direct Tensor access; reports say it does not gate ordinary apps, and one Pixel 10 Pro Fold user reported CPU-only local LLMs. Nothing found ties error 16 to GrapheneOS.
