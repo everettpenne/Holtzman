@@ -181,7 +181,6 @@ private fun CameraScreen() {
 
     /** The shutter: now, or after the self-timer's countdown (a second tick at a time, so it can be seen and a second press cancels it). */
     fun toggleRecording() {
-        android.util.Log.i("HoltzmanCamera", "toggleRecording: controller.recording=${controller.recording} ui.recording=$recording")
         // the controller is the truth about whether it is recording (the screen's copy is updated from another thread and can lag a tap behind)
         if (controller.recording) { controller.stopRecording { }; return }
         scope.launch(Dispatchers.IO) {

@@ -260,7 +260,6 @@ class CameraController(private val context: Context) {
         val quality = videoQuality ?: return onError("The camera is not in video mode.")
         val id = cameraId?.toIntOrNull() ?: return onError("Unknown camera.")
         val chars = characteristics ?: return
-        Log.i(TAG, "startRecording: recording=$recording")
         val gen = generation
         val profile = runCatching { CamcorderProfile.get(id, quality.camcorder) }.getOrNull() ?: return onError("This phone cannot record ${quality.label}.")
         val front = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
@@ -300,7 +299,6 @@ class CameraController(private val context: Context) {
 
     /** Stops recording and puts the preview back. [onStopped] gets true when a usable file was written (a recording stopped within a moment of starting has none). */
     fun stopRecording(onStopped: (Boolean) -> Unit) {
-        Log.i(TAG, "stopRecording: recorder=$recorder recording=$recording")
         val r = recorder
         val camera = device
         handler.post {
