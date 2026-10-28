@@ -119,3 +119,19 @@ Photon-transfer fit per ISO (variance = shot x signal + read variance, counts sq
 | 3194 | 5.281 | 0.00165 | 52.9 |
 
 Shot noise is linear in ISO (about 0.0017 per ISO unit). Read variance follows roughly 1 + 5.2e-6 x ISO^2. The earlier single-burst fit at about ISO 860 (shot 1.5, read variance 7.9) agrees with this model (1.46 and 4.8). The signal in these bins only reaches about 86 counts (the scene was dim), so the read variance at low ISO is the least certain figure. The merge now uses `mergeParamsForIso` from each burst's reference-frame ISO.
+
+## GPU merge (Pixel 10a, OpenGL ES 3.1 compute, `save/GpuMerge.kt`)
+
+Alignment and merge now run as compute shaders, with the same algorithm as `IxBurst.merge`: a three-level brightness pyramid per frame, a tile search that tests the same candidates with the same penalties and picks the same winner (candidates are scored in parallel, one thread each; a single thread then takes the cheapest, first of equals in the CPU's loop order), and a running weighted sum with the same noise-aware weight. The CPU merge remains the fallback if the device has no ES 3.1 context.
+
+Equivalence, measured on a real 12 MP burst by running both on the same frames (`VERIFY_GPU`): largest difference between GPU and CPU merged samples **1 count; 0 of 12,000,000 samples differ by more than 1** (mean difference 0.00005 counts); mean frames per cell identical (5.952927 both). The remaining difference is float rounding in the weights.
+
+| Stage | CPU | GPU |
+|---|---|---|
+| Merge, 6 frames, 12 MP | 1.3-1.4 s | about 0.39 s (uploading the frames and compiling shaders about 0.1 s, pyramids 20 ms, align 150 ms, accumulate 45 ms) |
+| Render two pictures | 6.8 s (CPU) | about 0.23 s (plus exposure, context and shader set-up: 0.9 s as logged) |
+| **Shutter to everything saved** | **8.5 s** | **1.6 s** |
+
+A first parallelisation matters here: with one thread per tile the align pass took 406 ms for five frames (11,750 threads, each serial); one workgroup per tile took it to 150 ms with the identical result.
+
+Not done: caching compiled shader programs between bursts, keeping the merged mosaic on the GPU for the render (it is read back and uploaded again), and GPU reference-frame selection (still the CPU's sampler, a few milliseconds).

@@ -1,11 +1,6 @@
 package com.everettpenne.holtzman.save
 
 import android.graphics.Bitmap
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLContext
-import android.opengl.EGLDisplay
-import android.opengl.EGLSurface
 import android.opengl.GLES31
 import com.everettpenne.ix.IxRender
 import com.everettpenne.ix.IxRenderSettings
@@ -18,30 +13,12 @@ import java.nio.ByteOrder
  * two demosaics and tones. The demosaic taps are generated from [IxRender.kernels], so the CPU and GPU renderers share their numbers. Needs a
  * thread of its own while it lives (it owns an EGL context). Throws if the device cannot run it; callers fall back to the CPU renderer.
  */
-class GpuRender : AutoCloseable {
-    private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
-    private var context: EGLContext = EGL14.EGL_NO_CONTEXT
-    private var surface: EGLSurface = EGL14.EGL_NO_SURFACE
+class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext: Boolean = true) : AutoCloseable {
     private var linearProgram = 0
     private var toneProgram = 0
 
     init {
-        try {
-            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-            val v = IntArray(2)
-            check(EGL14.eglInitialize(display, v, 0, v, 1)) { "EGL did not initialise" }
-            val attribs = intArrayOf(EGL14.EGL_RENDERABLE_TYPE, 0x40 /* EGL_OPENGL_ES3_BIT */, EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT, EGL14.EGL_NONE)
-            val configs = arrayOfNulls<EGLConfig>(1); val n = IntArray(1)
-            check(EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, n, 0) && n[0] > 0) { "no ES 3 config" }
-            context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT, intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE), 0)
-            check(context != EGL14.EGL_NO_CONTEXT) { "no ES 3 context" }
-            surface = EGL14.eglCreatePbufferSurface(display, configs[0], intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0)
-            check(EGL14.eglMakeCurrent(display, surface, surface, context)) { "could not make the context current" }
-            val version = GLES31.glGetString(GLES31.GL_VERSION) ?: ""
-            check(version.contains("OpenGL ES 3.1") || version.contains("OpenGL ES 3.2")) { "compute shaders need ES 3.1, this is: $version" }
-            linearProgram = program(LINEAR_SHADER)
-            toneProgram = program(toneShader())
-        } catch (t: Throwable) { close(); throw t }
+        try { linearProgram = gl.program(LINEAR_SHADER); toneProgram = gl.program(toneShader()) } catch (t: Throwable) { close(); throw t }
     }
 
     /** Renders the whole mosaic [raw] (a [width] x [height] ARGB bitmap comes back), with the same inputs as the CPU renderer. */
@@ -66,22 +43,22 @@ class GpuRender : AutoCloseable {
             val gx = (width + 15) / 16; val gy = (height + 15) / 16
 
             GLES31.glUseProgram(linearProgram)
-            setInts(linearProgram, "size", width, height)
-            setInts(linearProgram, "redAt", s.cfa.redX, s.cfa.redY)
-            setInts(linearProgram, "black", *s.black)
+            gl.setInts(linearProgram, "size", width, height)
+            gl.setInts(linearProgram, "redAt", s.cfa.redX, s.cfa.redY)
+            gl.setInts(linearProgram, "black", *s.black)
             val range = FloatArray(4) { 1f / (s.white - s.black[it]) }
-            GLES31.glUniform4f(loc(linearProgram, "range"), range[0], range[1], range[2], range[3])
-            GLES31.glUniform1i(loc(linearProgram, "shadingCols"), shading?.cols ?: 0)
-            GLES31.glUniform1i(loc(linearProgram, "shadingRows"), shading?.rows ?: 0)
+            GLES31.glUniform4f(gl.loc(linearProgram, "range"), range[0], range[1], range[2], range[3])
+            GLES31.glUniform1i(gl.loc(linearProgram, "shadingCols"), shading?.cols ?: 0)
+            GLES31.glUniform1i(gl.loc(linearProgram, "shadingRows"), shading?.rows ?: 0)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
 
             GLES31.glUseProgram(toneProgram)
-            setInts(toneProgram, "size", width, height)
-            setInts(toneProgram, "redAt", s.cfa.redX, s.cfa.redY)
-            GLES31.glUniform3f(loc(toneProgram, "wb"), s.wb[0], s.wb[1], s.wb[2])
-            GLES31.glUniformMatrix3fv(loc(toneProgram, "ccm"), 1, true, s.ccm, 0)   // row-major in, so transpose
-            GLES31.glUniform1f(loc(toneProgram, "exposure"), exposure)
+            gl.setInts(toneProgram, "size", width, height)
+            gl.setInts(toneProgram, "redAt", s.cfa.redX, s.cfa.redY)
+            GLES31.glUniform3f(gl.loc(toneProgram, "wb"), s.wb[0], s.wb[1], s.wb[2])
+            GLES31.glUniformMatrix3fv(gl.loc(toneProgram, "ccm"), 1, true, s.ccm, 0)   // row-major in, so transpose
+            GLES31.glUniform1f(gl.loc(toneProgram, "exposure"), exposure)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
 
@@ -95,16 +72,6 @@ class GpuRender : AutoCloseable {
         } finally { GLES31.glDeleteBuffers(4, buffers, 0) }
     }
 
-    override fun close() {
-        if (display != EGL14.EGL_NO_DISPLAY) {
-            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface)
-            if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context)
-            EGL14.eglTerminate(display)
-        }
-        display = EGL14.EGL_NO_DISPLAY; context = EGL14.EGL_NO_CONTEXT; surface = EGL14.EGL_NO_SURFACE
-    }
-
     private fun upload(buffer: Int, data: ByteBuffer, size: Int) {
         GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, buffer)
         data.rewind()
@@ -116,23 +83,7 @@ class GpuRender : AutoCloseable {
         GLES31.glBufferData(GLES31.GL_SHADER_STORAGE_BUFFER, size, null, GLES31.GL_DYNAMIC_COPY)
     }
 
-    private fun loc(program: Int, name: String): Int = GLES31.glGetUniformLocation(program, name).also { check(it >= 0) { "shader has no uniform $name" } }
-    private fun setInts(program: Int, name: String, vararg v: Int) {
-        when (v.size) { 2 -> GLES31.glUniform2i(loc(program, name), v[0], v[1]); 4 -> GLES31.glUniform4i(loc(program, name), v[0], v[1], v[2], v[3]) else -> error("2 or 4 ints") }
-    }
-
-    private fun program(source: String): Int {
-        val shader = GLES31.glCreateShader(GLES31.GL_COMPUTE_SHADER)
-        GLES31.glShaderSource(shader, source); GLES31.glCompileShader(shader)
-        val ok = IntArray(1); GLES31.glGetShaderiv(shader, GLES31.GL_COMPILE_STATUS, ok, 0)
-        check(ok[0] != 0) { "compute shader did not compile: ${GLES31.glGetShaderInfoLog(shader)}" }
-        val p = GLES31.glCreateProgram()
-        GLES31.glAttachShader(p, shader); GLES31.glLinkProgram(p)
-        GLES31.glGetProgramiv(p, GLES31.GL_LINK_STATUS, ok, 0)
-        check(ok[0] != 0) { "compute program did not link: ${GLES31.glGetProgramInfoLog(p)}" }
-        GLES31.glDeleteShader(shader)
-        return p
-    }
+    override fun close() { if (ownsContext) gl.close() }
 
     private companion object {
         /** The channel at (x, y): 0 red, 1 green, 2 blue, from where red sits in the 2x2 cell. Same rule as IxCfa.channelAt. */
