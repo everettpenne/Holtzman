@@ -45,4 +45,18 @@ class CameraSpecTest {
         assertEquals("HOLTZ_19700101_000000_000", captureBaseName(0, 0))
         assertEquals("leap day", "HOLTZ_20240229_120000_000", captureBaseName(1_709_208_000_000L, 0))
     }
+
+    @Test fun paddingAfterTheEndOfAJpegIsTrimmed() {
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1, 2, 3, 0xFF.toByte(), 0xD9.toByte())
+        assertArrayEquals(jpeg, trimJpeg(jpeg + ByteArray(100)))
+        assertSame("already clean", jpeg, trimJpeg(jpeg))
+        val noMarker = byteArrayOf(1, 2, 3, 0, 0)
+        assertSame("no end marker: left alone", noMarker, trimJpeg(noMarker))
+        assertArrayEquals("a zero inside the picture is kept", byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0, 0, 0xFF.toByte(), 0xD9.toByte()), trimJpeg(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0, 0, 0xFF.toByte(), 0xD9.toByte(), 0, 0)))
+        assertEquals(0, trimJpeg(ByteArray(0)).size)
+    }
+
+    @Test fun exifOrientationValues() {
+        assertEquals(1, exifOrientationFor(0)); assertEquals(6, exifOrientationFor(90)); assertEquals(3, exifOrientationFor(180)); assertEquals(8, exifOrientationFor(270)); assertEquals(8, exifOrientationFor(-90))
+    }
 }

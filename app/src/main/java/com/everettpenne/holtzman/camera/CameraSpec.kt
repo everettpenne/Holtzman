@@ -65,3 +65,18 @@ fun captureBaseName(timestampMillis: Long, zoneOffsetMillis: Long): String {
     val h = ms / 3_600_000; val m = ms / 60_000 % 60; val s = ms / 1000 % 60; val milli = ms % 1000
     return "HOLTZ_%04d%02d%02d_%02d%02d%02d_%03d".format(year, month, day, h, m, s, milli)
 }
+
+/**
+ * A JPEG without the zero padding some camera pipelines leave after its end. The vendor extensions hand back a fixed-size buffer (a 0.9 MB picture
+ * in a 9.4 MB buffer on the Pixel 10a); stored as it came, every Night photo would be ten times its size. Returns [bytes] unchanged when it already
+ * ends at the end-of-image marker, or when no marker is found (a damaged file is not made worse by guessing).
+ */
+fun trimJpeg(bytes: ByteArray): ByteArray {
+    var end = bytes.size
+    while (end > 2 && bytes[end - 1] == 0.toByte()) end--
+    return if (end >= 2 && bytes[end - 2] == 0xFF.toByte() && bytes[end - 1] == 0xD9.toByte() && end < bytes.size) bytes.copyOf(end) else bytes
+}
+
+/** The EXIF orientation value for a rotation of 0, 90, 180 or 270 degrees clockwise (1, 6, 3, 8). */
+fun exifOrientationFor(degrees: Int): Int = when (((degrees % 360) + 360) % 360) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 }
+

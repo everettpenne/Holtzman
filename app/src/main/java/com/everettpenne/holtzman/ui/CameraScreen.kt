@@ -75,13 +75,18 @@ private fun CameraScreen() {
     var lens by remember { mutableStateOf(Lens.BACK) }
     var raw by remember { mutableStateOf(false) }
     var rawAvailable by remember { mutableStateOf(false) }
+    var night by remember { mutableStateOf(false) }
     var surfaceReady by remember { mutableStateOf<SurfaceHolder?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var last by remember { mutableStateOf<Saved?>(null) }
     var showProbe by remember { mutableStateOf(false) }
     var deviceDegrees by remember { mutableIntStateOf(0) }
-    val previewShape = remember(lens) { controller.previewSizeFor(lens) }
+    val nightAvailable = remember(lens) { android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT in controller.extensionsFor(lens) }
+    // a lens without Night turns Night off
+    LaunchedEffect(nightAvailable) { if (!nightAvailable) night = false }
+    val nightExtension = if (night && nightAvailable) android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT else null
+    val previewShape = remember(lens, nightExtension) { controller.previewSizeFor(lens, nightExtension) }
 
     // the phone's tilt, for the saved picture's orientation
     DisposableEffect(context) {
@@ -97,24 +102,25 @@ private fun CameraScreen() {
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, resumed, previewShape) {
-        val holder = surfaceReady
-        if (holder == null || !resumed) { controller.close(); return@LaunchedEffect }
-        previewShape?.let { holder.setFixedSize(it.width, it.height) }
-        controller.open(lens, holder.surface, raw, onReady = { rawAvailable = controller.rawAvailable }, onError = { status = it })
+    LaunchedEffect(surfaceReady, lens, raw, resumed, previewShape, nightExtension) {
+        val surface = surfaceReady?.surface
+        if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
+        previewShape?.let { surfaceReady?.setFixedSize(it.width, it.height) }
+        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
 
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
         busy = true
+        if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, onResult = { still ->
             // the heavy part (writing the files) leaves the camera thread, so the next preview frame is never held up by storage
             scope.launch(Dispatchers.IO) {
                 val saved = runCatching { saver.save(still) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    saved.onSuccess { last = it; status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Couldn't save: ${it.message}" }
+                    saved.onSuccess { last = it; status = if (it.dng != null) "Saved JPEG + DNG" else if (night) "Saved (Night)" else "Saved" }.onFailure { status = "Couldn't save: ${it.message}" }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
@@ -123,22 +129,29 @@ private fun CameraScreen() {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
         val ratio = previewShape?.let { it.height.toFloat() / it.width } ?: (3f / 4f)
-        AndroidView(
-            factory = { c -> SurfaceView(c).apply {
-                holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(h: SurfaceHolder) { surfaceReady = h }
-                    override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
-                    override fun surfaceDestroyed(h: SurfaceHolder) { surfaceReady = null }
-                })
-            } },
-            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio),
-        )
+        // One SurfaceView for every pipeline (the normal one and the vendor extensions both deliver an upright preview), never recreated when the
+        // mode changes: a new view would destroy the surface the camera is about to be given.
+        run {
+            AndroidView(
+                factory = { c -> SurfaceView(c).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(h: SurfaceHolder) { surfaceReady = h }
+                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
+                        override fun surfaceDestroyed(h: SurfaceHolder) { surfaceReady = null }
+                    })
+                } },
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio),
+            )
+        }
 
         // top: the probe, and what the camera is saying
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
             Spacer(Modifier.weight(1f))
-            if (rawAvailable || !raw) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) raw = false }
+                if (!night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+            }
         }
         status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
             .background(Color.Black.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) }
@@ -170,3 +183,4 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean, onClick: () -> Un
     Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White,
         modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) Holtzman.accent else Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp))
 }
+

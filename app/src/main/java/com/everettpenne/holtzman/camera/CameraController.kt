@@ -3,13 +3,17 @@ package com.everettpenne.holtzman.camera
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
+import android.hardware.camera2.params.ExtensionSessionConfiguration
+import android.hardware.camera2.params.OutputConfiguration
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import java.util.concurrent.Executor
 
 /** What a finished still is: the JPEG bytes, and (when RAW was asked for and the camera gave it) the DNG-ready sensor data. */
 class StillResult(
@@ -20,6 +24,8 @@ class StillResult(
     val characteristics: CameraCharacteristics,
     /** A short word added to the file name ("hq"), or empty. */
     val tag: String = "",
+    /** The pipeline did not honour JPEG_ORIENTATION (the vendor extensions): the saver writes the EXIF orientation itself. */
+    val needsExifOrientation: Boolean = false,
 )
 
 /** One RAW frame and the metadata DngCreator needs to describe it. Call [close] when done: it owns the camera's buffer. */
@@ -45,6 +51,12 @@ class CameraController(private val context: Context) {
     private var jpegReader: ImageReader? = null
     private var rawReader: ImageReader? = null
     private var previewSurface: Surface? = null
+    private var extensionSession: CameraExtensionSession? = null
+    /** Counts opens: a camera that finishes opening after a newer open began (a mode switched in the meantime) is closed, not used. */
+    @Volatile private var generation = 0
+    private val executor = Executor { handler.post(it) }
+    /** The vendor extension in use (CameraExtensionCharacteristics.EXTENSION_*), or null for the normal pipeline. */
+    var extension: Int? = null; private set
 
     var characteristics: CameraCharacteristics? = null; private set
     var cameraId: String? = null; private set
@@ -63,12 +75,25 @@ class CameraController(private val context: Context) {
         }
     }
 
-    /** Sizes the preview should offer for [lens], so the screen can be laid out before the camera is open. Null when the lens is missing. */
-    fun previewSizeFor(lens: Lens): Dim? {
+    /** The vendor extensions (Night, HDR, ...) the camera of [lens] offers a third-party app, as CameraExtensionCharacteristics.EXTENSION_* values. */
+    fun extensionsFor(lens: Lens): Set<Int> {
+        val id = idFor(lens) ?: return emptySet()
+        return runCatching { manager.getCameraExtensionCharacteristics(id).supportedExtensions.toSet() }.getOrDefault(emptySet())
+    }
+
+    private fun stillSizes(id: String, extension: Int?): List<Dim> =
+        if (extension != null) manager.getCameraExtensionCharacteristics(id).getExtensionSupportedSizes(extension, ImageFormat.JPEG).map { Dim(it.width, it.height) }
+        else manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.JPEG).orEmpty().map { Dim(it.width, it.height) }
+
+    private fun previewSizes(id: String, extension: Int?): List<Dim> =
+        if (extension != null) manager.getCameraExtensionCharacteristics(id).getExtensionSupportedSizes(extension, SurfaceTexture::class.java).map { Dim(it.width, it.height) }
+        else manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(SurfaceTexture::class.java).orEmpty().map { Dim(it.width, it.height) }
+
+    /** The preview size for [lens] (and [extension], whose sizes differ), so the screen can be laid out before the camera is open. Null when the lens is missing. */
+    fun previewSizeFor(lens: Lens, extension: Int? = null): Dim? {
         val id = idFor(lens) ?: return null
-        val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val still = pickStillSize(map.getOutputSizes(ImageFormat.JPEG).orEmpty().map { Dim(it.width, it.height) }) ?: return null
-        return pickPreviewSize(map.getOutputSizes(android.graphics.SurfaceTexture::class.java).orEmpty().map { Dim(it.width, it.height) }, still.ratio)
+        val still = pickStillSize(stillSizes(id, extension)) ?: return null
+        return pickPreviewSize(previewSizes(id, extension), still.ratio)
     }
 
     /**
@@ -76,32 +101,38 @@ class CameraController(private val context: Context) {
      * once frames are flowing; [onError] says what went wrong.
      */
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
-    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, onReady: () -> Unit, onError: (String) -> Unit) {
+    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
+        val gen = ++generation
         val id = idFor(lens) ?: return onError("This phone has no ${lens.name.lowercase()} camera.")
         val chars = manager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return onError("The camera reports no stream sizes.")
-        val still = pickStillSize(map.getOutputSizes(ImageFormat.JPEG).orEmpty().map { Dim(it.width, it.height) }) ?: return onError("No 4:3 photo size.")
-        val preview = pickPreviewSize(map.getOutputSizes(android.graphics.SurfaceTexture::class.java).orEmpty().map { Dim(it.width, it.height) }, still.ratio)
-            ?: return onError("No preview size.")
-        val raw = if (wantRaw && chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true)
+        val still = pickStillSize(stillSizes(id, extension)) ?: return onError("No 4:3 photo size.")
+        val preview = pickPreviewSize(previewSizes(id, extension), still.ratio) ?: return onError("No preview size.")
+        // RAW is the normal pipeline's; an extension hands back its own processed JPEG only.
+        val raw = if (extension == null && wantRaw && chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true)
             map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }?.let { Dim(it.width, it.height) } else null
 
-        characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface
+        characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension
         jpegReader = ImageReader.newInstance(still.width, still.height, ImageFormat.JPEG, 3)
         rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 3) }
 
         manager.openCamera(id, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) { device = camera; startSession(camera, onReady, onError) }
-            override fun onDisconnected(camera: CameraDevice) { camera.close(); device = null; onError("The camera was disconnected.") }
-            override fun onError(camera: CameraDevice, error: Int) { camera.close(); device = null; onError("The camera failed to open (error $error).") }
+            override fun onOpened(camera: CameraDevice) {
+                if (gen != generation) { camera.close(); return }
+                device = camera; startSession(camera, gen, onReady, onError)
+            }
+            override fun onDisconnected(camera: CameraDevice) { camera.close(); if (gen == generation) { device = null; onError("The camera was disconnected.") } }
+            override fun onError(camera: CameraDevice, error: Int) { camera.close(); if (gen == generation) { device = null; onError("The camera failed to open (error $error).") } }
         }, handler)
     }
 
-    private fun startSession(camera: CameraDevice, onReady: () -> Unit, onError: (String) -> Unit) {
+    private fun startSession(camera: CameraDevice, gen: Int, onReady: () -> Unit, onError: (String) -> Unit) {
+        extension?.let { return startExtensionSession(camera, gen, it, onReady, onError) }
         val surfaces = listOfNotNull(previewSurface, jpegReader?.surface, rawReader?.surface)
         camera.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
+                if (gen != generation) { s.close(); return }
                 session = s
                 try {
                     val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
@@ -113,8 +144,38 @@ class CameraController(private val context: Context) {
                     onReady()
                 } catch (e: Exception) { onError("The preview would not start: ${e.message}") }
             }
-            override fun onConfigureFailed(s: CameraCaptureSession) = onError("The camera could not be configured.")
+            override fun onConfigureFailed(s: CameraCaptureSession) { if (gen == generation) onError("The camera could not be configured.") }
         }, handler)
+    }
+
+    /** The vendor-processed pipeline (Night, HDR): the extension owns the capture, so the session is configured differently and only a JPEG comes back. */
+    private fun startExtensionSession(camera: CameraDevice, gen: Int, ext: Int, onReady: () -> Unit, onError: (String) -> Unit) {
+        val outputs = listOf(OutputConfiguration(previewSurface!!), OutputConfiguration(jpegReader!!.surface))
+        val config = ExtensionSessionConfiguration(ext, outputs, executor, object : CameraExtensionSession.StateCallback() {
+            override fun onConfigured(session: CameraExtensionSession) {
+                if (gen != generation) { session.close(); return }
+                extensionSession = session
+                try {
+                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }.build()
+                    session.setRepeatingRequest(request, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+                    onReady()
+                } catch (e: Exception) { onError("The preview would not start: ${e.message}") }
+            }
+            override fun onConfigureFailed(session: CameraExtensionSession) { if (gen == generation) onError("This phone could not start the extension.") }
+        })
+        try { camera.createExtensionSession(config) } catch (e: Exception) { onError("The extension would not open: ${e.message}") }
+    }
+
+    private fun captureWithExtension(session: CameraExtensionSession, camera: CameraDevice, orientation: Int, chars: CameraCharacteristics, onResult: (StillResult) -> Unit, onError: (String) -> Unit) {
+        val jpegs = jpegReader ?: return
+        try {
+            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply { addTarget(jpegs.surface); set(CaptureRequest.JPEG_ORIENTATION, orientation) }.build()
+            val gather = Gather(wantRaw = false, needsResult = false) { jpeg, _ -> onResult(StillResult(jpeg, orientation, null, System.currentTimeMillis(), chars, "night", needsExifOrientation = true)) }
+            jpegs.setOnImageAvailableListener({ r -> r.acquireNextImage()?.use { image -> gather.jpeg(image.planes[0].buffer.let { b -> ByteArray(b.remaining()).also { b.get(it) }.let(::trimJpeg) }) } }, handler)
+            session.capture(request, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {
+                override fun onCaptureFailed(session: CameraExtensionSession, request: CaptureRequest) { gather.fail(); onError("The extension shot failed.") }
+            })
+        } catch (e: Exception) { Log.w(TAG, "extension capture failed", e); onError("The shot failed: ${e.message}") }
     }
 
     /**
@@ -123,11 +184,13 @@ class CameraController(private val context: Context) {
      */
     fun capture(deviceDegrees: Int, highQuality: Boolean = false, onResult: (StillResult) -> Unit, onError: (String) -> Unit) {
         val camera = device ?: return onError("The camera is not open.")
-        val s = session ?: return onError("The camera is not ready.")
         val chars = characteristics ?: return
+        val front0 = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
         val jpegs = jpegReader ?: return
         val front = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
         val orientation = jpegOrientation(chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, front)
+        extensionSession?.let { return captureWithExtension(it, camera, orientation, chars, onResult, onError) }
+        val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader
         try {
             val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
@@ -150,7 +213,7 @@ class CameraController(private val context: Context) {
 
             // A still arrives as up to three events on up to two threads (the JPEG image, the RAW image, the capture result); gather them, then hand over once.
             val gather = Gather(wantRaw = raws != null) { jpeg, raw -> onResult(StillResult(jpeg, orientation, raw, System.currentTimeMillis(), chars, if (highQuality) "hq" else "")) }
-            jpegs.setOnImageAvailableListener({ r -> r.acquireNextImage()?.use { image -> gather.jpeg(image.planes[0].buffer.let { b -> ByteArray(b.remaining()).also { b.get(it) } }) } }, handler)
+            jpegs.setOnImageAvailableListener({ r -> r.acquireNextImage()?.use { image -> gather.jpeg(image.planes[0].buffer.let { b -> ByteArray(b.remaining()).also { b.get(it) }.let(::trimJpeg) }) } }, handler)
             raws?.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let { gather.rawImage(it) } }, handler)
             s.capture(request, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) { gather.result(result) }
@@ -162,6 +225,8 @@ class CameraController(private val context: Context) {
     }
 
     fun close() {
+        generation++   // anything still opening is now stale
+        runCatching { extensionSession?.close() }; extensionSession = null; extension = null
         runCatching { session?.close() }; session = null
         runCatching { device?.close() }; device = null
         runCatching { jpegReader?.close() }; jpegReader = null
@@ -171,7 +236,7 @@ class CameraController(private val context: Context) {
     fun release() { close(); thread.quitSafely() }
 
     /** Waits for every part of one shot, then delivers it once. Used from the camera thread only. */
-    private class Gather(private val wantRaw: Boolean, private val done: (ByteArray, RawCapture?) -> Unit) {
+    private class Gather(private val wantRaw: Boolean, private val needsResult: Boolean = true, private val done: (ByteArray, RawCapture?) -> Unit) {
         private var jpeg: ByteArray? = null
         private var rawImage: Image? = null
         private var result: TotalCaptureResult? = null
@@ -185,8 +250,8 @@ class CameraController(private val context: Context) {
         private fun check() {
             if (delivered) return
             val j = jpeg ?: return
-            val r = result ?: return
-            if (wantRaw) { val img = rawImage ?: return; delivered = true; done(j, RawCapture(img, r)) } else { delivered = true; done(j, null) }
+            val r = result ?: if (needsResult) return else null
+            if (wantRaw && r != null) { val img = rawImage ?: return; delivered = true; done(j, RawCapture(img, r)) } else { delivered = true; done(j, null) }
         }
     }
 }

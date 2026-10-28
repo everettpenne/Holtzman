@@ -8,7 +8,9 @@ import android.os.Environment
 import android.provider.MediaStore
 import com.everettpenne.holtzman.camera.RawCapture
 import com.everettpenne.holtzman.camera.StillResult
+import androidx.exifinterface.media.ExifInterface
 import com.everettpenne.holtzman.camera.captureBaseName
+import com.everettpenne.holtzman.camera.exifOrientationFor
 import java.util.TimeZone
 
 /** What a save wrote: the content address of each file, in the order the media library holds them. */
@@ -23,6 +25,7 @@ class PhotoSaver(private val resolver: ContentResolver) {
     fun save(still: StillResult): Saved {
         val base = captureBaseName(still.timestampMillis, TimeZone.getDefault().getOffset(still.timestampMillis).toLong()) + if (still.tag.isEmpty()) "" else "_${still.tag}"
         val jpeg = write("$base.jpg", "image/jpeg", still.timestampMillis) { out -> out.write(still.jpeg) }
+        if (still.needsExifOrientation) setExifOrientation(jpeg, still.orientation)
         val dng = still.raw?.let { raw ->
             try {
                 write("$base.dng", "image/x-adobe-dng", still.timestampMillis) { out ->
@@ -53,6 +56,17 @@ class PhotoSaver(private val resolver: ContentResolver) {
             throw t
         }
         return uri
+    }
+
+    /** Writes the orientation tag into a saved JPEG (for pipelines that leave it at 1). A failure leaves the photo as it was: sideways beats lost. */
+    private fun setExifOrientation(uri: Uri, degrees: Int) {
+        runCatching {
+            resolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+                val exif = ExifInterface(pfd.fileDescriptor)
+                exif.setAttribute(ExifInterface.TAG_ORIENTATION, exifOrientationFor(degrees).toString())
+                exif.saveAttributes()
+            }
+        }
     }
 
     private fun exifOrientation(degrees: Int): Int = when (degrees) {
