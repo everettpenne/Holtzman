@@ -49,7 +49,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "local tone mapping unavailable, toning globally: $t") }
         try {
             lumaHistProgram = gl.program(LUMA_HISTOGRAM_SHADER); curveProgram = gl.program(CURVE_SHADER)
-            gl.loc(lumaHistProgram, "size"); gl.loc(lumaHistProgram, "region"); gl.loc(lumaHistProgram, "step"); gl.loc(curveProgram, "size"); gl.loc(curveProgram, "curveY[0]")
+            gl.loc(lumaHistProgram, "size"); gl.loc(lumaHistProgram, "region"); gl.loc(lumaHistProgram, "stride"); gl.loc(curveProgram, "size"); gl.loc(curveProgram, "curveY[0]")
             autoToneAvailable = true
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "adaptive tone unavailable, using the fixed curve: $t") }
     }
@@ -153,7 +153,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, histBuffer[0])
                     GLES31.glUseProgram(lumaHistProgram)
                     gl.setInts(lumaHistProgram, "size", width, height)
-                    gl.setInts(lumaHistProgram, "region", 0, 0, width, height); gl.setInts(lumaHistProgram, "step", 2)
+                    gl.setInts(lumaHistProgram, "region", 0, 0, width, height); gl.setInts(lumaHistProgram, "stride", 2)
                     GLES31.glDispatchCompute((width / 2 + 15) / 16, (height / 2 + 15) / 16, 1)
                     GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
                     val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
@@ -168,7 +168,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                             GLES31.glBufferData(GLES31.GL_SHADER_STORAGE_BUFFER, 256 * 4, ByteBuffer.allocateDirect(256 * 4).order(ByteOrder.nativeOrder()), GLES31.GL_DYNAMIC_COPY)
                             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, faceHist[0])
                             GLES31.glUseProgram(lumaHistProgram)
-                            gl.setInts(lumaHistProgram, "region", face[0], face[1], face[2], face[3]); gl.setInts(lumaHistProgram, "step", 1)
+                            gl.setInts(lumaHistProgram, "region", face[0], face[1], face[2], face[3]); gl.setInts(lumaHistProgram, "stride", 1)
                             GLES31.glDispatchCompute(((face[2] - face[0]) + 15) / 16, ((face[3] - face[1]) + 15) / 16, 1)
                             GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
                             val fc = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
@@ -356,9 +356,9 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(local_size_x = 16, local_size_y = 16) in;
             layout(std430, binding = 3) readonly buffer In { uint src[]; };
             layout(std430, binding = 7) buffer Hist { uint hist[]; };
-            uniform ivec2 size; uniform ivec4 region; uniform int step;
+            uniform ivec2 size; uniform ivec4 region; uniform int stride;
             void main() {
-                ivec2 g = region.xy + ivec2(gl_GlobalInvocationID.xy) * step;
+                ivec2 g = region.xy + ivec2(gl_GlobalInvocationID.xy) * stride;
                 if (g.x >= region.z || g.y >= region.w || g.x >= size.x || g.y >= size.y) return;
                 uint v = src[g.y * size.x + g.x];
                 float l = dot(vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)), vec3(0.2126, 0.7152, 0.0722));

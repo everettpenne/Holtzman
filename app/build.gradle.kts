@@ -18,8 +18,8 @@ android {
         // The Pixel 10a first (Android 17). Android 14+ because Ultra HDR needs the Gainmap API; nothing below is promised.
         minSdk = 34
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {

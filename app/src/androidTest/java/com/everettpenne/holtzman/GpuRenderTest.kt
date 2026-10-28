@@ -29,6 +29,27 @@ class GpuRenderTest {
     private fun settings(look: IxLook) = IxRenderSettings(IxCfa.RGGB, intArrayOf(64, 64, 64, 64), 1023, floatArrayOf(1.6f, 1f, 1.9f), floatArrayOf(1.4f, -0.3f, -0.1f, -0.2f, 1.3f, -0.1f, 0f, -0.4f, 1.4f), null, look = look)
     private val gl = runCatching { GlContext() }.getOrNull()
 
+    /** Every optional GPU stage must build here. Each has a fallback that keeps the app working, which also hides a shader that stops compiling: this test does not let it. */
+    @Test fun everyShaderStageBuilds() {
+        assumeNotNull(gl)
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            assertTrue("noise-aware finish", gpu.noiseAwareFinish)
+            assertTrue("local tone mapping", gpu.localToneAvailable)
+            assertTrue("adaptive tone", gpu.autoToneAvailable)
+        }
+    }
+
+    @Test fun theAdaptiveToneRunsAndKeepsFacesOutOfTheShadows() {
+        assumeNotNull(gl)
+        val raw = mosaic(2f, 9)
+        val look = IxLook(autoTone = 1f, localTone = 0.35f, grain = 1.2f, denoise = 0.7f, detail = 3f, sharpen = 1.8f)
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            val plain = gpu.toBitmap(raw, w, h, settings(look), 1.5f)
+            val withFace = gpu.toBitmap(raw, w, h, settings(look), 1.5f, face = intArrayOf(20, 20, 100, 100))
+            assertEquals(w, plain.width); assertEquals(h, withFace.height)
+        }
+    }
+
     @Test fun theBaseRenderMatchesTheCpuRenderer() {
         assumeNotNull(gl)
         val raw = mosaic(0f, 1)
