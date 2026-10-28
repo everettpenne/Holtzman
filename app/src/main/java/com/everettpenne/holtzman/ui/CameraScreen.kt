@@ -25,6 +25,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -80,6 +82,11 @@ private fun CameraScreen() {
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
     var zoom by remember { mutableFloatStateOf(1f) }
+    var flash by remember { mutableStateOf(FlashMode.OFF) }
+    var flashAvailable by remember { mutableStateOf(false) }
+    var timer by remember { mutableStateOf(TimerMode.OFF) }
+    var grid by remember { mutableStateOf(false) }
+    var countdown by remember { mutableIntStateOf(0) }
     var zoomRange by remember { mutableStateOf(1f..1f) }
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
     var surfaceReady by remember { mutableStateOf<SurfaceHolder?>(null) }
@@ -113,7 +120,7 @@ private fun CameraScreen() {
         val surface = surfaceReady?.surface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { surfaceReady?.setFixedSize(it.width, it.height) }
-        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
@@ -122,7 +129,7 @@ private fun CameraScreen() {
         if (busy) return
         busy = true
         if (night) status = "Hold still…"
-        controller.capture(deviceDegrees, highQuality, onResult = { still ->
+        controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
             // the heavy part (writing the files) leaves the camera thread, so the next preview frame is never held up by storage
             scope.launch(Dispatchers.IO) {
                 val saved = runCatching { saver.save(still) }
@@ -133,6 +140,18 @@ private fun CameraScreen() {
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
     }
+
+    /** The shutter: now, or after the self-timer's countdown (a second tick at a time, so it can be seen and a second press cancels it). */
+    fun trigger() {
+        if (countdown > 0) { countdown = 0; return }          // pressing during the countdown cancels it
+        if (timer == TimerMode.OFF) { shoot(); return }
+        scope.launch {
+            countdown = timer.seconds
+            while (countdown > 0) { delay(1000); if (countdown == 0) return@launch; countdown-- }
+            shoot()
+        }
+    }
+    LaunchedEffect(Unit) { ShutterKeys.flow.collect { if (!busy) trigger() } }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
@@ -161,6 +180,13 @@ private fun CameraScreen() {
             }
         }
 
+        // the thirds grid, over the picture
+        if (grid) Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio).drawBehind {
+            val c = Color.White.copy(alpha = .35f)
+            for (i in 1..2) { drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3, 0f), androidx.compose.ui.geometry.Offset(size.width * i / 3, size.height), 1.5f); drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.5f) }
+        })
+        if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
+
         // top: the probe, and what the camera is saying
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
@@ -170,7 +196,13 @@ private fun CameraScreen() {
                 if (!night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }
-        status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
+        // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture
+        Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (flashAvailable && !night) Chip(when (flash) { FlashMode.OFF -> "⚡ Off"; FlashMode.AUTO -> "⚡ Auto"; FlashMode.ON -> "⚡ On" }, flash != FlashMode.OFF, enabled = true) { flash = flash.next() }
+            Chip(if (timer == TimerMode.OFF) "Timer" else timer.label, timer != TimerMode.OFF, enabled = true) { timer = timer.next() }
+            Chip("Grid", grid, enabled = true) { grid = !grid }
+        }
+        status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 120.dp)
             .background(Color.Black.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) }
 
         // zoom: the stops the camera offers, and the ratio now applied
@@ -193,7 +225,7 @@ private fun CameraScreen() {
                 last?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it.jpeg, "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
             }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f)) }
             Box(Modifier.size(84.dp).border(4.dp, Color.White, CircleShape).padding(7.dp).clip(CircleShape).background(if (busy) Holtzman.accent.copy(alpha = .5f) else Color.White)
-                .clickable(enabled = !busy) { shoot() }.semantics { contentDescription = "Shutter" })
+                .clickable(enabled = !busy) { trigger() }.semantics { contentDescription = "Shutter" })
             Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White.copy(alpha = .12f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK },
                 contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
         }

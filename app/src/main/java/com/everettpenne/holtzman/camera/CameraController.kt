@@ -59,6 +59,7 @@ class CameraController(private val context: Context) {
     var extension: Int? = null; private set
 
     /** The zoom now applied (1.0 is the main lens; below 1 uses the ultrawide on a logical camera), and the range the camera offers. */
+    var flashAvailable: Boolean = false; private set
     var zoom: Float = 1f; private set
     var zoomMin: Float = 1f; private set
     var zoomMax: Float = 1f; private set
@@ -66,6 +67,7 @@ class CameraController(private val context: Context) {
     private var zoomSupportedInExtension = false
     private var repeatingTemplate: CaptureRequest.Builder? = null
     private val afReset = Runnable { clearFocus() }
+    @Volatile private var precapturing = false
 
     var characteristics: CameraCharacteristics? = null; private set
     var cameraId: String? = null; private set
@@ -125,6 +127,7 @@ class CameraController(private val context: Context) {
         val zr = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
         zoomMin = zr?.lower ?: 1f; zoomMax = zr?.upper ?: 1f; zoom = clampZoom(1f, zoomMin, zoomMax); focusRegion = null
         zoomSupportedInExtension = extension != null && runCatching { manager.getCameraExtensionCharacteristics(id).getAvailableCaptureRequestKeys(extension).contains(CaptureRequest.CONTROL_ZOOM_RATIO) }.getOrDefault(false)
+        flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension
         jpegReader = ImageReader.newInstance(still.width, still.height, ImageFormat.JPEG, 3)
         rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 3) }
@@ -254,7 +257,7 @@ class CameraController(private val context: Context) {
      * Takes one still. [deviceDegrees] is the phone's tilt (see [jpegOrientation]). With RAW on, one request feeds both streams so the two files
      * are the same instant. [onResult] runs on the camera thread; the caller owns the [RawCapture] it gets and must close it.
      */
-    fun capture(deviceDegrees: Int, highQuality: Boolean = false, onResult: (StillResult) -> Unit, onError: (String) -> Unit) {
+    fun capture(deviceDegrees: Int, highQuality: Boolean = false, flash: FlashMode = FlashMode.OFF, onResult: (StillResult) -> Unit, onError: (String) -> Unit) {
         val camera = device ?: return onError("The camera is not open.")
         val chars = characteristics ?: return
         val front0 = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
@@ -263,6 +266,26 @@ class CameraController(private val context: Context) {
         val orientation = jpegOrientation(chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, front)
         extensionSession?.let { return captureWithExtension(it, camera, orientation, chars, onResult, onError) }
         val s = session ?: return onError("The camera is not ready.")
+        val aeMode = aeModeFor(flash, flashAvailable)
+        if (aeMode != 1 && !precapturing) {
+            // With the flash in play the exposure is metered first (a precapture sequence), so the flash and the ambient light are balanced; then the shot.
+            precapturing = true
+            try {
+                val pre = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                    addTarget(previewSurface!!)
+                    set(CaptureRequest.CONTROL_AE_MODE, aeMode); set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
+                    set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+                }.build()
+                s.capture(pre, object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                        handler.postDelayed({ capture(deviceDegrees, highQuality, flash, onResult, onError) }, 500)
+                    }
+                    override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) { precapturing = false; onError("The flash metering failed.") }
+                }, handler)
+            } catch (e: Exception) { precapturing = false; onError("The flash metering failed: ${e.message}") }
+            return
+        }
+        precapturing = false
         val raws = rawReader
         try {
             val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
@@ -272,7 +295,7 @@ class CameraController(private val context: Context) {
                 set(CaptureRequest.JPEG_QUALITY, 97.toByte())
                 set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                set(CaptureRequest.CONTROL_AE_MODE, aeMode)
                 if (highQuality) {
                     // Every processing stage at its best setting (slower): the comparison the probe makes against the default.
                     set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)

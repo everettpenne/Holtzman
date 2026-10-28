@@ -117,3 +117,22 @@ fun zoomStops(min: Float, max: Float): List<Float> = buildList {
     add(1f)
     if (2f <= max) add(2f)
 }
+
+/** The flash settings a person chooses between. */
+enum class FlashMode(val label: String) {
+    OFF("Off"), AUTO("Auto"), ON("On");
+    fun next(): FlashMode = entries[(ordinal + 1) % entries.size]
+}
+
+/** The AE_MODE to request for [flash]: the plain mode when there is no flash unit or the flash is off, otherwise the flash-aware one. */
+fun aeModeFor(flash: FlashMode, hasFlash: Boolean): Int = when {
+    !hasFlash || flash == FlashMode.OFF -> 1                  // CONTROL_AE_MODE_ON
+    flash == FlashMode.AUTO -> 2                              // CONTROL_AE_MODE_ON_AUTO_FLASH
+    else -> 3                                                 // CONTROL_AE_MODE_ON_ALWAYS_FLASH
+}
+
+/** The self-timer: off, 3 seconds, 10 seconds. */
+enum class TimerMode(val seconds: Int, val label: String) {
+    OFF(0, "Off"), THREE(3, "3 s"), TEN(10, "10 s");
+    fun next(): TimerMode = entries[(ordinal + 1) % entries.size]
+}

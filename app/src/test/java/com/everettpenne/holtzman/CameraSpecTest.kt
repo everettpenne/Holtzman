@@ -82,4 +82,10 @@ class CameraSpecTest {
         assertEquals(0.5f, clampZoom(0.1f, 0.5f, 8f)); assertEquals(8f, clampZoom(20f, 0.5f, 8f)); assertEquals(2.5f, clampZoom(2.5f, 0.5f, 8f)); assertEquals(1f, clampZoom(Float.NaN, 1f, 8f))
         assertEquals(listOf(0.5556f, 1f, 2f), zoomStops(0.5556f, 8f)); assertEquals(listOf(1f, 2f), zoomStops(1f, 8f)); assertEquals(listOf(1f), zoomStops(1f, 1.5f)); assertEquals(listOf(1f, 2f), zoomStops(0.97f, 10f))
     }
+
+    @Test fun flashAndTimerCycleAndFlashModesMapToAeModes() {
+        assertEquals(FlashMode.AUTO, FlashMode.OFF.next()); assertEquals(FlashMode.ON, FlashMode.AUTO.next()); assertEquals(FlashMode.OFF, FlashMode.ON.next())
+        assertEquals(TimerMode.THREE, TimerMode.OFF.next()); assertEquals(TimerMode.TEN, TimerMode.THREE.next()); assertEquals(TimerMode.OFF, TimerMode.TEN.next())
+        assertEquals(1, aeModeFor(FlashMode.ON, hasFlash = false)); assertEquals(1, aeModeFor(FlashMode.OFF, true)); assertEquals(2, aeModeFor(FlashMode.AUTO, true)); assertEquals(3, aeModeFor(FlashMode.ON, true))
+    }
 }
