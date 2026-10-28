@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.camera.*
 import com.everettpenne.holtzman.save.PhotoSaver
+import com.everettpenne.holtzman.save.UltraHdr
 import com.everettpenne.holtzman.save.Saved
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +82,7 @@ private fun CameraScreen() {
     var raw by remember { mutableStateOf(false) }
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
+    var hdr by remember { mutableStateOf(false) }
     var zoom by remember { mutableFloatStateOf(1f) }
     var flash by remember { mutableStateOf(FlashMode.OFF) }
     var flashAvailable by remember { mutableStateOf(false) }
@@ -116,11 +118,11 @@ private fun CameraScreen() {
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, resumed, previewShape, nightExtension) {
+    LaunchedEffect(surfaceReady, lens, raw, hdr, resumed, previewShape, nightExtension) {
         val surface = surfaceReady?.surface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { surfaceReady?.setFixedSize(it.width, it.height) }
-        controller.open(lens, surface, raw, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw || hdr, nightExtension, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
@@ -132,10 +134,13 @@ private fun CameraScreen() {
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
             // the heavy part (writing the files) leaves the camera thread, so the next preview frame is never held up by storage
             scope.launch(Dispatchers.IO) {
-                val saved = runCatching { saver.save(still) }
+                // Ultra HDR is built from the RAW taken beside the JPEG, only at 1x (the RAW frame is not cropped by the zoom, so the two would not line up)
+                val wantHdr = hdr && !night && still.raw != null && kotlin.math.abs(zoom - 1f) < 0.02f
+                val hdrBytes = if (wantHdr) UltraHdr.build(still) else null
+                val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    saved.onSuccess { last = it; status = if (it.dng != null) "Saved JPEG + DNG" else if (night) "Saved (Night)" else "Saved" }.onFailure { status = "Couldn't save: ${it.message}" }
+                    saved.onSuccess { last = it; status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" } }.onFailure { status = "Couldn't save: ${it.message}" }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
@@ -192,7 +197,8 @@ private fun CameraScreen() {
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) raw = false }
+                if (nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false } }
+                if (!night) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
                 if (!night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }

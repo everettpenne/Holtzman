@@ -22,11 +22,16 @@ class Saved(val jpeg: Uri, val dng: Uri?)
  */
 class PhotoSaver(private val resolver: ContentResolver) {
 
-    fun save(still: StillResult): Saved {
+    /**
+     * Writes the shot. [hdrJpeg] replaces the JPEG when an Ultra HDR file was built (it has lost its EXIF orientation in the re-encode, so that is
+     * written back); [keepDng] says whether the DNG is wanted (the RAW frame is also taken just to build Ultra HDR, and is then discarded).
+     */
+    fun save(still: StillResult, hdrJpeg: ByteArray? = null, keepDng: Boolean = true): Saved {
         val base = captureBaseName(still.timestampMillis, TimeZone.getDefault().getOffset(still.timestampMillis).toLong()) + if (still.tag.isEmpty()) "" else "_${still.tag}"
-        val jpeg = write("$base.jpg", "image/jpeg", still.timestampMillis) { out -> out.write(still.jpeg) }
-        if (still.needsExifOrientation) setExifOrientation(jpeg, still.orientation)
+        val jpeg = write("$base.jpg", "image/jpeg", still.timestampMillis) { out -> out.write(hdrJpeg ?: still.jpeg) }
+        if (still.needsExifOrientation || hdrJpeg != null) setExifOrientation(jpeg, still.orientation)
         val dng = still.raw?.let { raw ->
+            if (!keepDng) { raw.close(); return@let null }
             try {
                 write("$base.dng", "image/x-adobe-dng", still.timestampMillis) { out ->
                     DngCreator(still.characteristics, raw.result).use { creator ->

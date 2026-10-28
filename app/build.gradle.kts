@@ -13,8 +13,8 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.everettpenne.holtzman"
-        // The Pixel 10a first: Android 16. Older Pixels at API 33+ should work; nothing below is promised.
-        minSdk = 33
+        // The Pixel 10a first (Android 17). Android 14+ because Ultra HDR needs the Gainmap API; nothing below is promised.
+        minSdk = 34
         targetSdk = 36
         versionCode = 1
         versionName = "0.0.1"
