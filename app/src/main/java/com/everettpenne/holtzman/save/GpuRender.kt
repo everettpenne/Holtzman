@@ -20,6 +20,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     private var sharpenProgram = 0
     private var lumaProgram = 0
     private var finishProgram = 0
+    private var histogramProgram = 0
     /** False when the noise-aware finish could not be built on this device: the plain sharpen pass is used instead. */
     var noiseAwareFinish = false; private set
 
@@ -27,15 +28,21 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         try { linearProgram = gl.program(LINEAR_SHADER); greenProgram = gl.program(GREEN_SHADER); toneProgram = gl.program(toneShader()); sharpenProgram = gl.program(SHARPEN_SHADER) } catch (t: Throwable) { close(); throw t }
         // the noise-aware finish is newer: if its shaders do not build here the render still works, with the plain sharpen pass
         try {
-            lumaProgram = gl.program(LUMA3_SHADER); finishProgram = gl.program(FINISH_SHADER)
+            lumaProgram = gl.program(LUMA3_SHADER); finishProgram = gl.program(FINISH_SHADER); histogramProgram = gl.program(NOISE_HISTOGRAM_SHADER)
             for (u in listOf("size", "sigmas", "denoise", "detail", "core", "clarity", "chromaMix")) gl.loc(finishProgram, u)
-            gl.loc(lumaProgram, "size")
+            gl.loc(lumaProgram, "size"); gl.loc(histogramProgram, "size")
             noiseAwareFinish = true
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "noise-aware finish unavailable, using the plain sharpen pass: $t") }
     }
 
     /** Renders the whole mosaic [raw] (a [width] x [height] ARGB bitmap comes back), with the same inputs as the CPU renderer. */
+    private var lap = 0L
+    private val laps = StringBuilder()
+    /** Time since the last mark, once the GPU has finished what was queued (only when [PROFILE] is on: it stalls the pipeline). */
+    private fun mark(name: String) { if (!PROFILE) return; GLES31.glFinish(); val t = System.nanoTime(); laps.append(" $name ${(t - lap) / 1_000_000}"); lap = t }
+
     fun toBitmap(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, exposure: Float): Bitmap {
+        laps.setLength(0); lap = System.nanoTime()
         require(raw.size >= width * height && width % 2 == 0) { "need a tight mosaic with an even width" }
         val pixels = width * height
         val buffers = IntArray(7)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma, green plane
@@ -43,6 +50,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         try {
             val rawBytes = ByteBuffer.allocateDirect(pixels * 2).order(ByteOrder.nativeOrder()).also { it.asShortBuffer().put(raw, 0, pixels); it.rewind() }
             upload(buffers[0], rawBytes, pixels * 2)
+            mark("upload")
             val shading = s.shading
             val gains = ByteBuffer.allocateDirect(maxOf(16, (shading?.gains?.size ?: 4) * 4)).order(ByteOrder.nativeOrder())
             shading?.let { gains.asFloatBuffer().put(it.gains) }
@@ -71,12 +79,14 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform1i(gl.loc(linearProgram, "shadingRows"), shading?.rows ?: 0)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+            mark("linear")
 
             GLES31.glUseProgram(greenProgram)
             gl.setInts(greenProgram, "size", width, height)
             gl.setInts(greenProgram, "redAt", s.cfa.redX, s.cfa.redY)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+            mark("green")
 
             GLES31.glUseProgram(toneProgram)
             gl.setInts(toneProgram, "size", width, height)
@@ -92,19 +102,34 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform1i(gl.loc(toneProgram, "hasCurve"), if (s.look.curve != null) 1 else 0)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+            mark("tone")
 
+            var sigmas = FloatArray(3)
             if (s.look.denoise > 0f && noiseAwareFinish) {
-                // how noisy the toned picture is, by brightness: read it back (one pass over a sample of it) so the smoothing matches the noise
-                GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
-                GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, buffers[3])
-                val view = GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, pixels * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer
-                val sigmas = com.everettpenne.ix.IxDisplayNoise.estimate(view.order(ByteOrder.nativeOrder()).asIntBuffer(), width, height)
-                GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+                // how noisy the toned picture is, by brightness: the GPU histograms the noise filter's response over a sample of the picture and the CPU
+                // reads back only the histogram (reading the picture itself back sample by sample took 0.7 s)
+                val histogram = IntArray(1); GLES31.glGenBuffers(1, histogram, 0)
+                try {
+                    val bins = 3 * com.everettpenne.ix.IxDisplayNoise.BINS
+                    GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, histogram[0])
+                    GLES31.glBufferData(GLES31.GL_SHADER_STORAGE_BUFFER, bins * 4, ByteBuffer.allocateDirect(bins * 4).order(ByteOrder.nativeOrder()), GLES31.GL_DYNAMIC_COPY)
+                    GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, histogram[0])
+                    GLES31.glUseProgram(histogramProgram)
+                    gl.setInts(histogramProgram, "size", width, height)
+                    GLES31.glDispatchCompute((width / 3 + 15) / 16, (height / 3 + 15) / 16, 1)
+                    GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                    val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, bins * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
+                    val hist = IntArray(bins).also { counts.get(it) }
+                    GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+                    sigmas = com.everettpenne.ix.IxDisplayNoise.fromHistogram(hist)
+                } finally { GLES31.glDeleteBuffers(1, histogram, 0) }
+                mark("noiseEstimate")
                 android.util.Log.i("HoltzmanGpu", "display noise (levels of 255) dark %.2f mid %.2f bright %.2f".format(java.util.Locale.ROOT, sigmas[0] * 255, sigmas[1] * 255, sigmas[2] * 255))
                 GLES31.glUseProgram(lumaProgram)
                 gl.setInts(lumaProgram, "size", width, height)
                 GLES31.glDispatchCompute(gx, gy, 1)
                 GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+                mark("luma3")
                 GLES31.glUseProgram(finishProgram)
                 gl.setInts(finishProgram, "size", width, height)
                 GLES31.glUniform3f(gl.loc(finishProgram, "sigmas"), sigmas[0], sigmas[1], sigmas[2])
@@ -115,6 +140,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 GLES31.glUniform1f(gl.loc(finishProgram, "chromaMix"), s.look.chromaSmoothing)
                 GLES31.glDispatchCompute(gx, gy, 1)
                 GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                mark("finish")
             } else {
                 // plain sharpen: reads the finished picture (binding 3) and writes the sharpened one (binding 4)
                 GLES31.glUseProgram(sharpenProgram)
@@ -131,6 +157,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             bitmap.copyPixelsFromBuffer(mapped.order(ByteOrder.nativeOrder()))   // the shader packs bytes as R, G, B, A, which is Bitmap's memory order
             GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
             check(GLES31.glGetError() == GLES31.GL_NO_ERROR) { "GL error during the render" }
+            mark("readback")
+            if (PROFILE) android.util.Log.i("HoltzmanGpu", "render passes (ms):$laps")
             return bitmap
         } finally { GLES31.glDeleteBuffers(7, buffers, 0) }
     }
@@ -149,6 +177,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     override fun close() { if (ownsContext) gl.close() }
 
     private companion object {
+        /** Logs how long each pass takes (stalls the pipeline to do it, so only for measuring). */
+        const val PROFILE = false
         /** The channel at (x, y): 0 red, 1 green, 2 blue, from where red sits in the 2x2 cell. Same rule as IxCfa.channelAt. */
         const val CHANNEL = """
             int channelAt(int x, int y) {
@@ -225,6 +255,30 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 lOut += amount * (1.0 - shadow) * clamp(cored, -0.1, 0.1);
                 c = clamp(vec3(lOut) + chroma, 0.0, 1.0);
                 dst[p.y * size.x + p.x] = uint(c.r * 255.0 + 0.5) | (uint(c.g * 255.0 + 0.5) << 8) | (uint(c.b * 255.0 + 0.5) << 16) | 0xFF000000u;
+            }
+        """
+
+        /** Histograms the noise filter's response (IxDisplayNoise's layout) over every third pixel of the toned picture: 3 areas by brightness, 2048 bins each. */
+        val NOISE_HISTOGRAM_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 3) readonly buffer In { uint src[]; };
+            layout(std430, binding = 7) buffer Hist { uint hist[]; };
+            uniform ivec2 size;
+            const int STRIDE = 3; const int BINS = 2048; const float TOP = 0.5;
+            float lumaAt(int x, int y) {
+                uint v = src[y * size.x + x];
+                return dot(vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)), vec3(0.2126, 0.7152, 0.0722)) / 255.0;
+            }
+            void main() {
+                ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+                int x = STRIDE + g.x * STRIDE; int y = STRIDE + g.y * STRIDE;
+                if (x >= size.x - STRIDE || y >= size.y - STRIDE) return;
+                float l[9]; float mean = 0.0; int k = 0;
+                for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) { l[k] = lumaAt(x + i * STRIDE, y + j * STRIDE); mean += l[k]; k++; }
+                mean /= 9.0;
+                float r = abs(l[0] - 2.0 * l[1] + l[2] - 2.0 * l[3] + 4.0 * l[4] - 2.0 * l[5] + l[6] - 2.0 * l[7] + l[8]);
+                int bin = mean < 0.12 ? 0 : (mean < 0.4 ? 1 : 2);
+                atomicAdd(hist[bin * BINS + min(int(r / TOP * float(BINS)), BINS - 1)], 1u);
             }
         """
 

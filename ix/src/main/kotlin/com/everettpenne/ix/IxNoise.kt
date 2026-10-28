@@ -75,9 +75,7 @@ public object IxDisplayNoise {
      * takes the mean of the others.
      */
     public fun estimate(argb: java.nio.IntBuffer, width: Int, height: Int, stride: Int = 3): FloatArray {
-        val bins = 2048; val top = 0.5f
-        val hist = Array(3) { IntArray(bins) }
-        val count = IntArray(3)
+        val hist = IntArray(3 * BINS)
         val l = FloatArray(9)
         var y = stride
         while (y < height - stride) {
@@ -92,16 +90,31 @@ public object IxDisplayNoise {
                 mean /= 9f
                 val r = abs(l[0] - 2 * l[1] + l[2] - 2 * l[3] + 4 * l[4] - 2 * l[5] + l[6] - 2 * l[7] + l[8])
                 val bin = if (mean < 0.12f) 0 else if (mean < 0.4f) 1 else 2
-                hist[bin][minOf(((r / top) * bins).toInt(), bins - 1)]++; count[bin]++
+                hist[bin * BINS + minOf(((r / TOP) * BINS).toInt(), BINS - 1)]++
                 x += stride
             }
             y += stride
         }
+        return fromHistogram(hist)
+    }
+
+    /** Histogram resolution of the filter response, and the response at its top end (0..1 luma units). The GPU fills the same layout. */
+    public const val BINS: Int = 2048
+    public const val TOP: Float = 0.5f
+
+    /**
+     * The noise levels from a histogram of filter responses, [BINS] entries for each of the dark, middle and bright areas in turn: the median
+     * response of each, scaled to a standard deviation. A bin with too few pixels takes the mean of the others.
+     */
+    public fun fromHistogram(hist: IntArray): FloatArray {
+        require(hist.size == 3 * BINS) { "need ${3 * BINS} entries" }
         val out = FloatArray(3) { -1f }
-        for (b in 0..2) if (count[b] >= 200) {
+        for (b in 0..2) {
+            var count = 0; for (i in 0 until BINS) count += hist[b * BINS + i]
+            if (count < 200) continue
             var acc = 0; var idx = 0
-            while (idx < bins - 1 && acc + hist[b][idx] < count[b] / 2) { acc += hist[b][idx]; idx++ }
-            out[b] = (idx + 0.5f) * top / bins / 4.047f   // the filter's output is 6 sigma wide; the median of its magnitude is 0.6745 of that
+            while (idx < BINS - 1 && acc + hist[b * BINS + idx] < count / 2) { acc += hist[b * BINS + idx]; idx++ }
+            out[b] = (idx + 0.5f) * TOP / BINS / 4.047f   // the filter's output is 6 sigma wide; the median of its magnitude is 0.6745 of that
         }
         val known = out.filter { it >= 0f }
         val fill = if (known.isEmpty()) 0.01f else known.average().toFloat()

@@ -19,6 +19,7 @@
     </queries>
 
     <application
+        android:largeHeap="true"
         android:label="Holtzman"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"

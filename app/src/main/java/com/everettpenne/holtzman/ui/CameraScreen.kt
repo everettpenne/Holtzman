@@ -176,7 +176,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val chars = controller.characteristics
         val processor = BurstProcessor(saver)
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
-        controller.captureBurst(onResult = { frames ->
+        controller.focusForShot { controller.captureBurst(onResult = { frames ->
             scope.launch(Dispatchers.Default) {
                 val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis()) }
                 withContext(Dispatchers.Main) {
@@ -184,7 +184,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     outcome.onSuccess { status = "Merged ${it.frames} frames in %.1f s".format(java.util.Locale.ROOT, it.millis / 1000f) }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
-        }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
+        }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } }) }
     }
 
     // Calibration for the burst merge's noise model: two frames at each of several ISOs, same brightness, phone held still on a still scene

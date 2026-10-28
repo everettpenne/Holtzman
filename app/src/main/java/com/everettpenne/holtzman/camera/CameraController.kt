@@ -257,6 +257,33 @@ class CameraController(private val context: Context) {
 
     private fun clearFocus() { focusRegion = null; resend() }
 
+    /**
+     * Runs one autofocus scan and waits for it to lock (at most 1.5 s), then calls [then], so a shot is focused on what the camera sees as the shutter
+     * is pressed rather than on whatever continuous autofocus last settled on: in a scene with a near subject and a far background it had settled on
+     * the background, and the first dataset shots came out sharp behind and soft in front. Skipped when the user has tapped to focus (that is already
+     * a lock) and in the vendor extensions. Continuous focus resumes a few seconds later.
+     */
+    fun focusForShot(then: () -> Unit) {
+        val s = session; val device = device
+        if (s == null || device == null || extension != null || focusRegion != null) { then(); return }
+        val started = android.os.SystemClock.uptimeMillis()
+        // Autofocus over the whole frame prefers the far scene (more contrast to lock onto): a fresh scan still focused on the factory behind a desk of near
+        // objects. So the scan is aimed at the centre of the frame, the way a tap on it would be, unless the user has chosen a spot.
+        focusAt(0.5f, 0.5f)
+        handler.post {
+            fun poll() {
+                val waited = android.os.SystemClock.uptimeMillis() - started
+                val state = autoSample?.afState
+                if ((state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) && waited > 200 || waited > 1500) {
+                    Log.i(TAG, "shutter focus: state $state after ${waited} ms, ${autoSample?.focusDiopters} diopters")
+                    handler.removeCallbacks(afReset); handler.postDelayed(afReset, 4000)
+                    then()
+                } else handler.postDelayed({ poll() }, 40)
+            }
+            handler.postDelayed({ poll() }, 120)
+        }
+    }
+
     /** Electronic stabilisation for video when the camera has it, otherwise optical when it has that. */
     private fun stabilise(b: CaptureRequest.Builder) {
         val chars = characteristics ?: return
@@ -464,10 +491,16 @@ class CameraController(private val context: Context) {
             fun check() {
                 if (delivered || images.size < n || results.size < n) return
                 delivered = true
-                onResult(List(n) { BurstFrame(images[it], dims[0], dims[1], results[it]) })
+                val burst = List(n) { BurstFrame(images[it], dims[0], dims[1], results[it]) }
+                // The listener and the capture callback outlive this call, and they hold these lists: left full they keep the whole burst (six 24 MB
+                // buffers that count against the app's heap) alive until the next burst replaces them, so two bursts in a row needed twice the memory
+                // and the second one ran the app out of it.
+                images.clear(); results.clear()
+                raws.setOnImageAvailableListener(null, null)
+                onResult(burst)
             }
             raws.setOnImageAvailableListener({ r ->
-                r.acquireNextImage()?.let { img ->
+                try { r.acquireNextImage()?.let { img ->
                     // copy the rows out (dropping the stride padding) and hand the camera its buffer back straight away
                     val plane = img.planes[0]
                     val w = img.width; val h = img.height
@@ -478,6 +511,11 @@ class CameraController(private val context: Context) {
                     img.close()
                     synchronized(images) { dims[0] = w; dims[1] = h; images += tight; check() }
                 }
+            } catch (t: Throwable) {
+                // an allocation failure here would otherwise end the whole app on the camera thread: report it as a failed burst instead
+                Log.w(TAG, "burst frame could not be kept", t)
+                synchronized(images) { if (!delivered) { delivered = true; images.clear(); results.clear(); onError("Out of memory keeping the burst's frames.") } }
+            }
             }, handler)
             s.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) { synchronized(images) { results += result; check() } }

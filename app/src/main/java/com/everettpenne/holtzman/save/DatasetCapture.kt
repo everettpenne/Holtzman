@@ -41,9 +41,13 @@ class DatasetCapture(private val controller: CameraController, private val saver
         controller.captureBurst(onResult = { c.resume(it) }, onError = { c.resumeWithException(IOException(it)) }, frames = frames, iso = iso, fixed = fixed)
     }
 
+    private suspend fun focus() = suspendCancellableCoroutine<Unit> { c -> controller.focusForShot { c.resume(Unit) } }
+
     /** Runs one shot of [kind]; [progress] gets a line as it goes. Returns the scene folder's name. Call off the main thread. */
     suspend fun run(kind: DatasetKind, tags: Set<String>, note: String, orientation: Int, progress: (String) -> Unit): String {
         val chars = controller.characteristics ?: throw IOException("The camera is not ready.")
+        if (controller.autoSample == null) throw IOException("Wait a moment for the exposure to settle.")
+        progress("Focusing…"); focus()
         val auto = controller.autoSample ?: throw IOException("Wait a moment for the exposure to settle.")
         val started = System.currentTimeMillis()
         val scene = "scene_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(started)) + "_" + kind.name.lowercase()
@@ -63,6 +67,8 @@ class DatasetCapture(private val controller: CameraController, private val saver
             written++
         }
 
+        var failure: Throwable? = null
+        try {
         when (kind) {
             DatasetKind.HANDHELD -> {
                 progress("Hold still…")
@@ -93,6 +99,8 @@ class DatasetCapture(private val controller: CameraController, private val saver
             }
         }
 
+        } catch (t: Throwable) { failure = t }
+
         val meta = JSONObject().apply {
             put("scene", scene); put("kind", kind.name); put("tags", JSONArray(tags.sorted())); put("note", note)
             put("startedAt", started); put("finishedAt", System.currentTimeMillis())
@@ -103,8 +111,11 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("thermalStatus", thermal())
             put("autoAtStart", JSONObject().put("exposureNs", auto.exposureNs).put("iso", auto.iso).put("focusDiopters", auto.focusDiopters?.toDouble() ?: JSONObject.NULL))
             put("frames", files)
+            put("complete", failure == null)
+            failure?.let { put("error", "${it.javaClass.simpleName}: ${it.message}") }
         }
         saver.writeDocument(folder, "meta.json", "application/json", started) { it.write(meta.toString(2).toByteArray()) }
+        failure?.let { progress("Stopped after $written frames: ${it.message}"); throw it }
         progress("Saved $written frames")
         return scene
     }
