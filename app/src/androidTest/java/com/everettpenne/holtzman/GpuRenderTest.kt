@@ -69,4 +69,32 @@ class GpuRenderTest {
             assertEquals(h * w, a.size)
         }
     }
+
+    /** A textured scene (diagonal gratings and colour edges), photographed through an RGGB mosaic: the two renderers' demosaics must agree. */
+    @Test fun theDemosaicMatchesTheCpuRendererOnTexture() {
+        assumeNotNull(gl)
+        val rnd = Random(7)
+        val raw = ShortArray(w * h) { i ->
+            val x = i % w; val y = i / w
+            val grating = 0.5f + 0.35f * Math.sin((x * 0.9 + y * 0.6)).toFloat()            // fine diagonal detail, near the sampling limit
+            val colour = when ((x / 40 + y / 40) % 3) { 0 -> floatArrayOf(1f, 0.4f, 0.2f); 1 -> floatArrayOf(0.3f, 1f, 0.5f); else -> floatArrayOf(0.4f, 0.5f, 1f) }
+            val ch = when { (y and 1) == 0 && (x and 1) == 0 -> 0; (y and 1) == 1 && (x and 1) == 1 -> 2; else -> 1 }
+            (64f + 800f * grating * colour[ch] * 0.8f + rnd.nextGaussian().toFloat() * 2f).coerceIn(0f, 1023f).toInt().toShort()
+        }
+        val s = settings(IxLook())
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            val bmp = gpu.toBitmap(raw, w, h, s, 1.2f)
+            val cpu = IntArray(w * h); IxRender.renderRows(raw, w, h, 0, h, s, 1.2f, cpu)
+            val g = IntArray(w * h); bmp.getPixels(g, 0, w, 0, 0, w, h)
+            var worst = 0; var big = 0; var n = 0
+            for (y in 12 until h - 12) for (x in 12 until w - 12) {
+                n++
+                var d = 0
+                for (shift in intArrayOf(0, 8, 16)) d = maxOf(d, Math.abs(((cpu[y * w + x] shr shift) and 255) - ((g[y * w + x] shr shift) and 255)))
+                worst = maxOf(worst, d); if (d > 3) big++
+            }
+            // the GPU's finishing pass smooths colour a little; allow it, but the demosaic itself must not disagree
+            assertTrue("largest difference $worst, $big of $n pixels off by more than 3", big < n / 50)
+        }
+    }
 }

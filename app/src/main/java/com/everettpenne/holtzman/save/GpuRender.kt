@@ -10,11 +10,12 @@ import java.nio.ByteOrder
 /**
  * Stage 3 on the GPU: the same render as [IxRender.renderRows] (black level, lens shading, Malvar-He-Cutler demosaic, white balance, the camera's
  * colour matrix, shoulder, sRGB) as two OpenGL ES 3.1 compute passes. Pass one turns counts into linear floats with the shading gain applied, pass
- * two demosaics and tones. The demosaic taps are generated from [IxRender.kernels], so the CPU and GPU renderers share their numbers. Needs a
+ * two demosaics and tones (the green plane first, then colour differences around it, as IxRender does). Needs a
  * thread of its own while it lives (it owns an EGL context). Throws if the device cannot run it; callers fall back to the CPU renderer.
  */
 class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext: Boolean = true) : AutoCloseable {
     private var linearProgram = 0
+    private var greenProgram = 0
     private var toneProgram = 0
     private var sharpenProgram = 0
     private var lumaProgram = 0
@@ -23,7 +24,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     var noiseAwareFinish = false; private set
 
     init {
-        try { linearProgram = gl.program(LINEAR_SHADER); toneProgram = gl.program(toneShader()); sharpenProgram = gl.program(SHARPEN_SHADER) } catch (t: Throwable) { close(); throw t }
+        try { linearProgram = gl.program(LINEAR_SHADER); greenProgram = gl.program(GREEN_SHADER); toneProgram = gl.program(toneShader()); sharpenProgram = gl.program(SHARPEN_SHADER) } catch (t: Throwable) { close(); throw t }
         // the noise-aware finish is newer: if its shaders do not build here the render still works, with the plain sharpen pass
         try {
             lumaProgram = gl.program(LUMA3_SHADER); finishProgram = gl.program(FINISH_SHADER)
@@ -37,8 +38,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     fun toBitmap(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, exposure: Float): Bitmap {
         require(raw.size >= width * height && width % 2 == 0) { "need a tight mosaic with an even width" }
         val pixels = width * height
-        val buffers = IntArray(6)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma
-        GLES31.glGenBuffers(6, buffers, 0)
+        val buffers = IntArray(7)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma, green plane
+        GLES31.glGenBuffers(7, buffers, 0)
         try {
             val rawBytes = ByteBuffer.allocateDirect(pixels * 2).order(ByteOrder.nativeOrder()).also { it.asShortBuffer().put(raw, 0, pixels); it.rewind() }
             upload(buffers[0], rawBytes, pixels * 2)
@@ -49,6 +50,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             allocate(buffers[2], pixels * 4)
             allocate(buffers[3], pixels * 4)
             allocate(buffers[4], pixels * 4)
+            allocate(buffers[6], pixels * 4)
             if (s.look.denoise > 0f && noiseAwareFinish) allocate(buffers[5], pixels * 4)
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffers[0])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, buffers[1])
@@ -56,6 +58,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 3, buffers[3])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 4, buffers[4])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 5, buffers[5])
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 6, buffers[6])
             val gx = (width + 15) / 16; val gy = (height + 15) / 16
 
             GLES31.glUseProgram(linearProgram)
@@ -66,6 +69,12 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform4f(gl.loc(linearProgram, "range"), range[0], range[1], range[2], range[3])
             GLES31.glUniform1i(gl.loc(linearProgram, "shadingCols"), shading?.cols ?: 0)
             GLES31.glUniform1i(gl.loc(linearProgram, "shadingRows"), shading?.rows ?: 0)
+            GLES31.glDispatchCompute(gx, gy, 1)
+            GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+
+            GLES31.glUseProgram(greenProgram)
+            gl.setInts(greenProgram, "size", width, height)
+            gl.setInts(greenProgram, "redAt", s.cfa.redX, s.cfa.redY)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -123,7 +132,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
             check(GLES31.glGetError() == GLES31.GL_NO_ERROR) { "GL error during the render" }
             return bitmap
-        } finally { GLES31.glDeleteBuffers(6, buffers, 0) }
+        } finally { GLES31.glDeleteBuffers(7, buffers, 0) }
     }
 
     private fun upload(buffer: Int, data: ByteBuffer, size: Int) {
@@ -201,6 +210,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 ivec2 p = ivec2(gl_GlobalInvocationID.xy);
                 if (p.x >= size.x || p.y >= size.y) return;
                 vec3 c = px(p.x, p.y);
+                if (amount <= 0.0) { dst[p.y * size.x + p.x] = src[p.y * size.x + p.x]; return; }   // sharpening off means untouched
                 const float k[5] = float[5](0.0625, 0.25, 0.375, 0.25, 0.0625);
                 vec3 blur = vec3(0.0);
                 for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) blur += k[i + 2] * k[j + 2] * px(p.x + i, p.y + j);
@@ -301,31 +311,53 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             }
         """
 
-        fun kernelFunction(name: String): String {
-            val taps = IxRender.kernels.getValue(name)
-            fun f(x: Float) = "%.9f".format(java.util.Locale.ROOT, x)
-            val offsets = taps.joinToString(", ") { "ivec2(${it.dx}, ${it.dy})" }
-            val weights = taps.joinToString(", ") { f(it.weight) }
-            return """
-            float $name(int x, int y) {
-                const ivec2 o[${taps.size}] = ivec2[${taps.size}]($offsets);
-                const float w[${taps.size}] = float[${taps.size}]($weights);
-                float a = 0.0;
-                for (int i = 0; i < ${taps.size}; i++) a += w[i] * at(x + o[i].x, y + o[i].y);
-                return a;
-            }"""
-        }
+        /**
+         * The green plane: measured where the sensor is green, elsewhere the Hamilton-Adams estimate of IxRender.greenEstimate (row and column
+         * interpolation blended by the inverse squared gradient, aggregated over the neighbouring same-colour sites).
+         */
+        val GREEN_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 2) readonly buffer Lin { float lin[]; };
+            layout(std430, binding = 6) writeonly buffer Green { float green[]; };
+            uniform ivec2 size; uniform ivec2 redAt;
+            const float EPS = 0.02;
+            $CHANNEL
+            float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
+            float dh(int x, int y) { return abs(at(x - 1, y) - at(x + 1, y)) + abs(2.0 * at(x, y) - at(x - 2, y) - at(x + 2, y)); }
+            float dv(int x, int y) { return abs(at(x, y - 1) - at(x, y + 1)) + abs(2.0 * at(x, y) - at(x, y - 2) - at(x, y + 2)); }
+            void main() {
+                ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+                if (p.x >= size.x || p.y >= size.y) return;
+                int x = p.x; int y = p.y;
+                float c = at(x, y);
+                float result = c;
+                if (channelAt(x, y) != 1) {
+                    float gh = (at(x - 1, y) + at(x + 1, y)) * 0.5 + (2.0 * c - at(x - 2, y) - at(x + 2, y)) * 0.25;
+                    float gv = (at(x, y - 1) + at(x, y + 1)) * 0.5 + (2.0 * c - at(x, y - 2) - at(x, y + 2)) * 0.25;
+                    float sh = 2.0 * dh(x - 2, y) + 4.0 * dh(x, y) + 2.0 * dh(x + 2, y) + 2.0 * dh(x, y - 2) + 2.0 * dh(x, y + 2)
+                             + dh(x - 2, y - 2) + dh(x + 2, y + 2) + dh(x - 2, y + 2) + dh(x + 2, y - 2);
+                    float sv = 2.0 * dv(x - 2, y) + 4.0 * dv(x, y) + 2.0 * dv(x + 2, y) + 2.0 * dv(x, y - 2) + 2.0 * dv(x, y + 2)
+                             + dv(x - 2, y - 2) + dv(x + 2, y + 2) + dv(x - 2, y + 2) + dv(x + 2, y - 2);
+                    float wh = 1.0 / ((EPS + sh / 8.0) * (EPS + sh / 8.0)); float wv = 1.0 / ((EPS + sv / 8.0) * (EPS + sv / 8.0));
+                    result = max((wh * gh + wv * gv) / (wh + wv), 0.0);
+                }
+                green[y * size.x + x] = result;
+            }
+        """
 
-        /** Pass two: demosaic, white balance, colour matrix, exposure, shoulder, sRGB, pack as R, G, B, A bytes. */
+        /** Pass three: colour from the colour differences (R minus G, B minus G) around each site, then white balance, matrix, exposure, curve and look. */
         fun toneShader(): String = """#version 310 es
             layout(local_size_x = 16, local_size_y = 16) in;
             layout(std430, binding = 2) readonly buffer Lin { float lin[]; };
             layout(std430, binding = 3) writeonly buffer Out { uint pixelsOut[]; };
+            layout(std430, binding = 6) readonly buffer Green { float green[]; };
             uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform mat3 ccm; uniform float exposure;
             uniform float blackPoint; uniform float contrast; uniform float saturation; uniform float curveX[12]; uniform float curveY[12]; uniform int hasCurve;
+            const float EPS = 0.02;
             $CHANNEL
             float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
-            ${IxRender.kernels.keys.joinToString("\n") { kernelFunction(it) }}
+            float g(int x, int y) { return green[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
+            float k(int x, int y) { return at(x, y) - g(x, y); }
             float shoulder(float x) { return x <= 0.75 ? max(x, 0.0) : 0.75 + 0.25 * (1.0 - exp(-(x - 0.75) / 0.25)); }
             float srgb(float x) { float c = clamp(x, 0.0, 1.0); return c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }
             float curved(float x) {
@@ -345,17 +377,20 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             void main() {
                 ivec2 p = ivec2(gl_GlobalInvocationID.xy);
                 if (p.x >= size.x || p.y >= size.y) return;
-                float v = at(p.x, p.y); float r; float g; float b;
+                float v = at(p.x, p.y); float r; float gr = g(p.x, p.y); float b;
                 int c = channelAt(p.x, p.y);
-                if (c == 0) { r = v; g = greenAtRedBlue(p.x, p.y); b = rbAtBlueRed(p.x, p.y); }
-                else if (c == 2) { b = v; g = greenAtRedBlue(p.x, p.y); r = rbAtBlueRed(p.x, p.y); }
-                else {
-                    g = v;
+                if (c == 1) {
                     bool redInRow = channelAt(p.x + 1, p.y) == 0 || channelAt(p.x - 1, p.y) == 0;
-                    r = redInRow ? rbAtGreenSameRow(p.x, p.y) : rbAtGreenSameCol(p.x, p.y);
-                    b = redInRow ? rbAtGreenSameCol(p.x, p.y) : rbAtGreenSameRow(p.x, p.y);
+                    float kh = 0.5 * (k(p.x - 1, p.y) + k(p.x + 1, p.y)); float kv = 0.5 * (k(p.x, p.y - 1) + k(p.x, p.y + 1));
+                    r = gr + (redInRow ? kh : kv); b = gr + (redInRow ? kv : kh);
+                } else {
+                    float d1 = abs(g(p.x - 1, p.y - 1) - g(p.x + 1, p.y + 1)); float d2 = abs(g(p.x + 1, p.y - 1) - g(p.x - 1, p.y + 1));
+                    float k1 = 0.5 * (k(p.x - 1, p.y - 1) + k(p.x + 1, p.y + 1)); float k2 = 0.5 * (k(p.x + 1, p.y - 1) + k(p.x - 1, p.y + 1));
+                    float w1 = 1.0 / ((EPS + d1) * (EPS + d1)); float w2 = 1.0 / ((EPS + d2) * (EPS + d2));
+                    float other = gr + (w1 * k1 + w2 * k2) / (w1 + w2);
+                    if (c == 0) { r = v; b = other; } else { b = v; r = other; }
                 }
-                vec3 w = vec3(max(r, 0.0) * wb.x, max(g, 0.0) * wb.y, max(b, 0.0) * wb.z);
+                vec3 w = vec3(max(r, 0.0) * wb.x, max(gr, 0.0) * wb.y, max(b, 0.0) * wb.z);
                 vec3 o = (ccm * w) * exposure;
                 vec3 d = look(vec3(srgb(shoulder(o.r)), srgb(shoulder(o.g)), srgb(shoulder(o.b))));
                 pixelsOut[p.y * size.x + p.x] = byteOf(d.r) | (byteOf(d.g) << 8) | (byteOf(d.b) << 16) | 0xFF000000u;
