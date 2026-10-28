@@ -9,6 +9,8 @@ val signingEnv = listOf("STORE_FILE", "STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWO
 val canSign = signingEnv.values.all { it != null }
 
 android {
+    // LiteRT finds its NPU compiler plugin by listing a directory, which only works if the native libraries are extracted to disk
+    packaging { jniLibs { useLegacyPackaging = true } }
     namespace = "com.everettpenne.holtzman"
     compileSdk = 36
     defaultConfig {

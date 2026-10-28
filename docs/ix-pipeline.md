@@ -77,3 +77,12 @@ Noise model fitted on the same burst: variance = 1.5 x signal + 7.9 counts squar
 Stage timings on the phone (non-debuggable build, 12 MP, 6 frames): merge 1.3 s, rendering two JPEGs 6.8 s, total 8.5 s. The render is the cost, and a GPU render pass is the obvious next target.
 
 Not measured: the effect of the new noise defaults on a fresh burst (installed on the phone, not yet re-shot), moving subjects, low light.
+
+## Why the NPU does not run it (diagnosed from the device log)
+
+Two separate causes, found in order:
+
+1. **The compiler plugin was never loaded.** Log: `Failed to apply compiler plugins: No compiler plugin found`, although `libLiteRtCompilerPlugin_google_tensor.so` was in the APK. LiteRT finds the plugin by listing a directory, and the app's native libraries were not extracted (`extractNativeLibs=false`, the Android default), so the directory held nothing. Fixed with `packaging { jniLibs { useLegacyPackaging = true } }` in `app/build.gradle.kts` (the app is larger on disk as a result). After that the plugin loads, partitions the whole network onto the NPU (10 of 10 ops, 1 partition) and starts compiling.
+2. **The phone refuses the compile.** Log: `libedgetpu_client: Compile failed, error code 16, message: Current application should not be allowed to access EdgeTPU.` This comes from the Edge TPU service on the device, not from LiteRT or from the model, and LiteRT then falls back to the CPU without telling the app (hence the identical outputs). So the model is NPU-compatible; this app is not permitted to use the NPU. Whether the check is a package/signature allowlist or something GrapheneOS-specific is **not established**; the message does not say.
+
+Consequence: an ahead-of-time compile on the Mac would not obviously help, since the refusal is about the app, not about where the model was compiled (not tried). The GPU stays the shipping accelerator. Also worth knowing: the app must not treat "NPU offered" as "NPU used"; check the output or the log.
