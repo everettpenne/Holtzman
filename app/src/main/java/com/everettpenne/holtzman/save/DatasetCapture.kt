@@ -109,6 +109,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("zoom", controller.zoom.toDouble()); put("orientationDegrees", orientation)
             put("sensorOrientation", chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: -1)
             put("thermalStatus", thermal())
+            put("shakeRateAtStart", controller.shakeRate.toDouble())
             put("autoAtStart", JSONObject().put("exposureNs", auto.exposureNs).put("iso", auto.iso).put("focusDiopters", auto.focusDiopters?.toDouble() ?: JSONObject.NULL))
             put("frames", files)
             put("complete", failure == null)

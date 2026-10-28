@@ -114,4 +114,29 @@ class CameraSpecTest {
         val r = scaleToRaw(intArrayOf(0, 0, 4080, 3072), 4080, 3072, 4000, 3000)
         assertEquals(4000, r[2]); assertEquals(3000, r[3])
     }
+
+    @Test fun aSteadyHandKeepsTheLongExposure() {
+        assertEquals(250_000_000L, shakeExposureLimitNs(0f, 2800f))
+        assertTrue(shakeExposureLimitNs(0.001f, 2800f) > 100_000_000L)
+    }
+
+    @Test fun aShakyHandShortensTheExposure() {
+        val steady = shakeExposureLimitNs(0.02f, 2800f); val shaky = shakeExposureLimitNs(0.1f, 2800f)
+        assertTrue("$shaky should be well under $steady", shaky < steady / 3)
+        assertEquals(4_000_000L, shakeExposureLimitNs(2f, 2800f))   // never shorter than the floor
+    }
+
+    @Test fun shorterExposureIsPaidForWithIso() {
+        val (ns, iso) = shakeAdjusted(100_000_000L, 200, 25_000_000L, 3200)
+        assertEquals(25_000_000L, ns); assertEquals(800, iso)
+    }
+
+    @Test fun whenIsoTopsOutTheExposureGrowsBackToKeepTheBrightness() {
+        val (ns, iso) = shakeAdjusted(200_000_000L, 1600, 10_000_000L, 3200)
+        assertEquals(3200, iso); assertEquals(100_000_000L, ns)   // brightness = ns x iso is unchanged
+    }
+
+    @Test fun anExposureWithinTheLimitIsLeftAlone() {
+        assertEquals(20_000_000L to 400, shakeAdjusted(20_000_000L, 400, 30_000_000L, 3200))
+    }
 }

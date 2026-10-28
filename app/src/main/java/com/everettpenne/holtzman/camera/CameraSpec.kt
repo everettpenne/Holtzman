@@ -178,3 +178,26 @@ fun scaleToRaw(box: IntArray, arrayWidth: Int, arrayHeight: Int, rawWidth: Int, 
     val sx = rawWidth.toFloat() / arrayWidth; val sy = rawHeight.toFloat() / arrayHeight
     return intArrayOf((box[0] * sx).toInt().coerceIn(0, rawWidth - 1), (box[1] * sy).toInt().coerceIn(0, rawHeight - 1), (box[2] * sx).toInt().coerceIn(1, rawWidth), (box[3] * sy).toInt().coerceIn(1, rawHeight))
 }
+
+/**
+ * The longest exposure that keeps hand shake from blurring a frame by more than [maxBlurPx] pixels: shake turns the camera at [rate] radians a second,
+ * which moves the picture across the sensor at rate x [focalPx] pixels a second. The merge can align one frame to another but cannot undo blur inside
+ * a frame, so a dim scene held in a shaky hand is better shot as shorter, noisier frames. Kept between [minNs] and [maxNs].
+ */
+fun shakeExposureLimitNs(rate: Float, focalPx: Float, maxBlurPx: Float = 1.5f, minNs: Long = 4_000_000L, maxNs: Long = 250_000_000L): Long {
+    if (rate <= 1e-4f || focalPx <= 0f) return maxNs
+    return ((maxBlurPx / (rate * focalPx)) * 1e9).toLong().coerceIn(minNs, maxNs)
+}
+
+/**
+ * Trades exposure time for ISO so the picture stays as bright: an exposure longer than [limitNs] is cut to it and the ISO raised in proportion, up to
+ * [isoMax]; if the ISO tops out first, the exposure grows back just enough to keep the brightness (a shaky dark scene gets some blur rather than a
+ * dark picture).
+ */
+fun shakeAdjusted(exposureNs: Long, iso: Int, limitNs: Long, isoMax: Int): Pair<Long, Int> {
+    if (exposureNs <= limitNs) return exposureNs to iso
+    val wanted = Math.ceil(iso.toDouble() * exposureNs / limitNs).toInt()
+    val newIso = wanted.coerceAtMost(maxOf(isoMax, iso))
+    val newNs = (exposureNs.toDouble() * iso / newIso).toLong()
+    return newNs to newIso
+}

@@ -53,6 +53,9 @@ class CameraController(private val context: Context) {
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("holtzman-camera").also { it.start() }
     private val handler = Handler(thread.looper)
+    private val shake = ShakeMonitor(context)
+    /** How fast the phone is turning now (radians a second), for the dataset's record and for choosing exposures. */
+    val shakeRate: Float get() = shake.rate
 
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -157,6 +160,7 @@ class CameraController(private val context: Context) {
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
     fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
+        shake.start()
         val gen = ++generation
         val id = idFor(lens) ?: return onError("This phone has no ${lens.name.lowercase()} camera.")
         val chars = manager.getCameraCharacteristics(id)
@@ -202,6 +206,15 @@ class CameraController(private val context: Context) {
             }
             override fun onConfigureFailed(s: CameraCaptureSession) { if (gen == generation) onError("The camera could not be configured.") }
         }, handler)
+    }
+
+    /** The lens's focal length in sensor pixels (focal length over pixel pitch): how far a turn of the camera moves the picture. */
+    private fun focalLengthPx(): Float {
+        val c = characteristics ?: return 0f
+        val f = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return 0f
+        val size = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return 0f
+        val px = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: return 0f
+        return f / (size.width / px.width)
     }
 
     /** The repeating preview request with the zoom and focus area now wanted. */
@@ -487,11 +500,19 @@ class CameraController(private val context: Context) {
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
         val auto = fixed ?: autoSample ?: return onError("Wait a moment for the exposure to settle.")
-        Log.i(TAG, "burst focus: preview had ${auto.focusDiopters} diopters, AF state ${auto.afState}")
+        Log.i(TAG, "burst focus: preview had ${auto.focusDiopters} diopters, AF state ${auto.afState}; shake %.4f rad/s".format(java.util.Locale.ROOT, shake.rate))
         val n = frames
         // a fixed ISO is for calibration: the exposure time moves the other way so the picture is as bright as automatic exposure chose
-        val useIso = iso ?: auto.iso
-        val useNs = if (iso == null) auto.exposureNs else (auto.exposureNs.toDouble() * auto.iso / iso).toLong()
+        var useIso = iso ?: auto.iso
+        var useNs = if (iso == null) auto.exposureNs else (auto.exposureNs.toDouble() * auto.iso / iso).toLong()
+        if (iso == null && fixed == null) {
+            // a shaky hand in dim light: shorter, noisier frames beat blurred ones, and the merge absorbs the noise
+            val limit = shakeExposureLimitNs(shake.rate, focalLengthPx())
+            val isoMax = minOf(characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.upper ?: 3200, 3200)
+            val (ns, isoNew) = shakeAdjusted(useNs, useIso, limit, isoMax)
+            if (ns != useNs) Log.i(TAG, "shake %.3f rad/s: exposure %d to %d us, ISO %d to %d".format(java.util.Locale.ROOT, shake.rate, useNs / 1000, ns / 1000, useIso, isoNew))
+            useNs = ns; useIso = isoNew
+        }
         val isoRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
         val nsRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
         if (iso != null && (isoRange?.contains(iso) != true || nsRange?.contains(useNs) != true)) return onError("ISO $iso needs an exposure of ${useNs / 1000} us, outside what this sensor allows.")
@@ -554,6 +575,7 @@ class CameraController(private val context: Context) {
     }
 
     fun close() {
+        shake.stop()
         if (recording) {
             val ok = runCatching { recorder?.stop() }.isSuccess
             abandonRecorder(); onRecordingEnded?.invoke(ok)
