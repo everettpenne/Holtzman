@@ -46,13 +46,16 @@ class PhotoSaver(private val resolver: ContentResolver) {
 
     /** A JPEG of [bitmap] at [quality], with the EXIF orientation [degrees] written back afterwards, in Pictures/Holtzman like every other file. */
     fun writeJpeg(name: String, timeMillis: Long, bitmap: android.graphics.Bitmap, quality: Int, degrees: Int): Uri {
-        val uri = write(name, "image/jpeg", timeMillis) { out -> if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)) throw java.io.IOException("The JPEG encoder refused $name.") }
-        setExifOrientation(uri, degrees)
-        return uri
+        // The rotation goes into the file while it is still pending. The media library reads a file's EXIF once, when it is published, and keeps what it
+        // read: a tag added afterwards leaves it believing the picture is upright, and the gallery, Files and anything built on its cache then show a
+        // portrait shot (a landscape bitmap in sensor orientation) turned a quarter, which is exactly what the first burst photos looked like.
+        return write(name, "image/jpeg", timeMillis, beforePublish = { uri -> setExifOrientation(uri, degrees) }) { out ->
+            if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)) throw java.io.IOException("The JPEG encoder refused $name.")
+        }
     }
 
     /** A DNG written by [body] to Pictures/Holtzman, pending until complete and removed on failure, like every other file. */
-    fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body)
+    fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body = body)
 
     /**
      * A file of any type in Documents/Holtzman/[folder] (the gallery does not list Documents, so a dataset of raw frames does not clutter it), pending
@@ -77,7 +80,7 @@ class PhotoSaver(private val resolver: ContentResolver) {
         return uri
     }
 
-    private fun write(name: String, mime: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri {
+    private fun write(name: String, mime: String, timeMillis: Long, beforePublish: (Uri) -> Unit = {}, body: (java.io.OutputStream) -> Unit): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
@@ -88,6 +91,7 @@ class PhotoSaver(private val resolver: ContentResolver) {
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: throw java.io.IOException("The media library would not make $name.")
         try {
             resolver.openOutputStream(uri)?.use(body) ?: throw java.io.IOException("Could not open $name for writing.")
+            beforePublish(uri)
             resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
         } catch (t: Throwable) {
             runCatching { resolver.delete(uri, null, null) }
