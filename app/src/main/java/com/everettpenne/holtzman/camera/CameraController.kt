@@ -78,12 +78,12 @@ class CameraController(private val context: Context) {
     @Volatile private var precapturing = false
 
     /** What automatic exposure was doing in the latest preview frame: where a burst starts from. Null until a frame has been seen. */
-    class AutoSample(val exposureNs: Long, val iso: Int)
+    class AutoSample(val exposureNs: Long, val iso: Int, val focusDiopters: Float?, val afState: Int?)
     @Volatile var autoSample: AutoSample? = null; private set
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
-            if (e != null && i != null) autoSample = AutoSample(e, i)
+            if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE))
         }
     }
 
@@ -434,6 +434,7 @@ class CameraController(private val context: Context) {
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
         val auto = autoSample ?: return onError("Wait a moment for the exposure to settle.")
+        Log.i(TAG, "burst focus: preview had ${auto.focusDiopters} diopters, AF state ${auto.afState}")
         val n = frames
         // a fixed ISO is for calibration: the exposure time moves the other way so the picture is as bright as automatic exposure chose
         val useIso = iso ?: auto.iso
@@ -446,7 +447,11 @@ class CameraController(private val context: Context) {
                 addTarget(raws.surface)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 set(CaptureRequest.SENSOR_EXPOSURE_TIME, useNs); set(CaptureRequest.SENSOR_SENSITIVITY, useIso)
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)   // focus stays where continuous AF last settled
+                // Focus is held where the preview's autofocus had it, and said so explicitly. With autofocus off and no focus distance in the request the
+                // lens goes to whatever the camera defaults to, not where it was: the first side-by-side against the Pixel camera app showed the burst
+                // sharp on the floor and soft on the subject the preview had focused on.
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                auto.focusDiopters?.let { set(CaptureRequest.LENS_FOCUS_DISTANCE, it) }
                 set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
                 // no HAL noise reduction, sharpening or tone curve on a frame that will be merged: the merge is the noise reduction
                 set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)

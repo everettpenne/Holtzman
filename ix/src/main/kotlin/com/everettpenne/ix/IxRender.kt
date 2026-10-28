@@ -27,6 +27,52 @@ public class IxShadingMap(public val cols: Int, public val rows: Int, public val
  * Everything the renderer needs to turn RAW counts into a picture, all of it from the frame's own metadata: levels, the white-balance gains and the
  * 3x3 colour matrix the camera itself chose (so the colours follow the stock camera's), and the shading map.
  */
+/**
+ * The finishing look, applied to the display-referred picture after the sRGB curve: a black point (so shadows reach black instead of staying
+ * milky), an S-shaped contrast, saturation, and unsharp-mask [sharpen] on luma (the GPU renderer only: it needs the neighbours, and the CPU
+ * renderer is the fallback). [NEUTRAL] changes nothing.
+ */
+public class IxLook(
+    /** Display value (0..1) that maps to black. */
+    public val blackPoint: Float = 0f,
+    /** 0 = none, 1 = a full smoothstep S-curve; blended between. */
+    public val contrast: Float = 0f,
+    /** 1 = unchanged. */
+    public val saturation: Float = 1f,
+    /** Unsharp-mask strength on luma, 0 = off. */
+    public val sharpen: Float = 0f,
+    /** Detail smaller than this (display levels of 255) is left alone, so noise is not sharpened with the picture. */
+    public val sharpenCore: Float = 2f,
+    /** A tone curve applied last: the output display value (0..1) at each of [CURVE_X], linear between. Null leaves the tones alone. */
+    public val curve: FloatArray? = null,
+) {
+    init { require(curve == null || curve.size == CURVE_X.size) { "the curve needs ${CURVE_X.size} points" } }
+
+    public companion object {
+        public val NEUTRAL: IxLook = IxLook()
+        /** Where the tone curve is sampled, in display values of 255. */
+        public val CURVE_X: FloatArray = floatArrayOf(0f, 8f, 16f, 32f, 48f, 64f, 96f, 128f, 160f, 192f, 224f, 255f).map { it / 255f }.toFloatArray()
+    }
+
+    private fun curved(x: Float): Float {
+        val c = curve ?: return x
+        if (x <= 0f) return c[0]
+        for (i in 1 until CURVE_X.size) if (x <= CURVE_X[i]) { val t = (x - CURVE_X[i - 1]) / (CURVE_X[i] - CURVE_X[i - 1]); return c[i - 1] + (c[i] - c[i - 1]) * t }
+        return c.last()
+    }
+
+    /** The per-pixel part of the look on a display-referred colour (components 0..1); sharpening is separate. */
+    public fun apply(rgb: FloatArray) {
+        for (i in 0..2) {
+            var c = ((rgb[i] - blackPoint) / (1f - blackPoint)).coerceIn(0f, 1f)
+            c += contrast * (c * c * (3f - 2f * c) - c)
+            rgb[i] = c
+        }
+        val l = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2]
+        for (i in 0..2) rgb[i] = curved((l + (rgb[i] - l) * saturation).coerceIn(0f, 1f))
+    }
+}
+
 public class IxRenderSettings(
     public val cfa: IxCfa,
     public val black: IntArray,
@@ -38,6 +84,7 @@ public class IxRenderSettings(
     public val shading: IxShadingMap? = null,
     /** Extra gain on the linear picture; null asks the renderer to choose one so an average scene lands at middle grey. */
     public val exposure: Float? = null,
+    public val look: IxLook = IxLook.NEUTRAL,
 ) {
     init { require(black.size == 4 && wb.size == 3 && ccm.size == 9) { "need 4 black levels, 3 white-balance gains and a 3x3 matrix" } }
 }
@@ -69,8 +116,8 @@ public object IxRender {
     /** A soft shoulder: linear to 0.75, then a smooth roll-off to 1, so highlights compress instead of clipping flat. Monotone, continuous in slope. */
     public fun shoulder(x: Float): Float = if (x <= 0.75f) max(x, 0f) else 0.75f + 0.25f * (1f - exp(-(x - 0.75f) / 0.25f))
 
-    /** The gain that puts the picture's average at middle grey (18%), within a sensible range: the mean of every 16th pixel's white-balanced green. */
-    public fun autoExposure(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings): Float {
+    /** The gain that puts the picture's average at [target] (18% is middle grey), within a sensible range: the mean of every 16th pixel's white-balanced green. */
+    public fun autoExposure(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, target: Float = 0.18f): Float {
         var sum = 0.0; var n = 0
         var y = 0
         while (y < height) {
@@ -83,8 +130,8 @@ public object IxRender {
             }
             y += 16
         }
-        val mean = if (n > 0) sum / n * s.wb[1] else 0.18
-        return (0.18 / max(mean, 1e-4)).toFloat().coerceIn(1f, 8f)
+        val mean = if (n > 0) sum / n * s.wb[1] else target.toDouble()
+        return (target / max(mean, 1e-4)).toFloat().coerceIn(1f, 8f)
     }
 
     /**
@@ -132,7 +179,9 @@ public object IxRender {
             val cr = (m[0] * wr + m[1] * wg + m[2] * wb) * exposure
             val cg = (m[3] * wr + m[4] * wg + m[5] * wb) * exposure
             val cb = (m[6] * wr + m[7] * wg + m[8] * wb) * exposure
-            val pr = (srgbEncode(shoulder(cr)) * 255f + 0.5f).toInt(); val pg = (srgbEncode(shoulder(cg)) * 255f + 0.5f).toInt(); val pb = (srgbEncode(shoulder(cb)) * 255f + 0.5f).toInt()
+            val disp = floatArrayOf(srgbEncode(shoulder(cr)), srgbEncode(shoulder(cg)), srgbEncode(shoulder(cb)))
+            s.look.apply(disp)
+            val pr = (disp[0] * 255f + 0.5f).toInt(); val pg = (disp[1] * 255f + 0.5f).toInt(); val pb = (disp[2] * 255f + 0.5f).toInt()
             out[(y - y0) * width + x] = (0xFF shl 24) or (pr shl 16) or (pg shl 8) or pb
         }
     }

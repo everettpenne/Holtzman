@@ -53,7 +53,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val settings = BurstRender.settings(frames[ref].result, characteristics, black)
             frames[ref].pixels.rewind()
             val refRaw = ShortArray(merged.width * merged.height).also { frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) }
-            val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings)
+            val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
             val tRender = System.nanoTime()
             val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure)
             val mergedJpeg = saver.writeJpeg("${base}_burst.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()

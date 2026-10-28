@@ -135,3 +135,30 @@ Equivalence, measured on a real 12 MP burst by running both on the same frames (
 A first parallelisation matters here: with one thread per tile the align pass took 406 ms for five frames (11,750 threads, each serial); one workgroup per tile took it to 150 ms with the identical result.
 
 Not done: caching compiled shader programs between bursts, keeping the merged mosaic on the GPU for the render (it is read back and uploaded again), and GPU reference-frame selection (still the CPU's sampler, a few milliseconds).
+
+## Side-by-side with the Pixel camera app (same phone, same still scene, 2026-10-27)
+
+Method: the phone stayed put; one photo from the Google camera app (1x, default settings, `PXL_*.jpg`) and one from a Holtzman burst, compared by script (luma percentiles, saturation, 100% crops) and by eye. One dim indoor scene, so everything below is tuned on a single scene and needs more.
+
+First comparison, Holtzman against Google:
+
+| | Google | Holtzman |
+|---|---|---|
+| Darkest 1% of pixels (luma) | 2 | 24: blacks lifted, no black point |
+| Median luma | 82 | 99 |
+| Pixels above 235 | 0.5% | 5.7%: highlights blown |
+| Mean saturation | 159 | 141 |
+| Label edge gradient, 99th percentile (100% crop) | 33.6 | 14.1 |
+
+**"Much blurrier" was mostly focus, not rendering.** The burst request turned autofocus off without setting a focus distance, so the lens went to the camera's default instead of staying where the preview had focused: the burst was sharp on the floor and soft on the puzzle label the preview had focused on. Fix: the burst now sets `LENS_FOCUS_DISTANCE` to the preview's (3.09 diopters, AF state PASSIVE_FOCUSED in the test). That alone took the label edge gradient from 14.1 to 22.8.
+
+Then the finish (`IxLook`, GPU only for sharpening): black point 0.04, S-curve contrast 0.4, saturation 1.15, a tone curve quantile-matched to Google's picture (shadows and mids lifted a little, highlights compressed), exposure target 0.12 instead of 0.18, and a finishing pass that smooths chroma everywhere, smooths luma in shadows, and sharpens luma (strength 1.8, core 1.5/255) with the sharpening fading out in shadows. Result on the same scene:
+
+| | Google | Holtzman now |
+|---|---|---|
+| Luma percentiles 1/5/25/50/75/95/99 | 2 / 9 / 47 / 82 / 127 / 183 / 206 | 6 / 11 / 40 / 73 / 121 / 195 / 228 |
+| Label edge gradient 99th / 99.9th percentile | 33.6 / 61.7 | 31.6 / 65.4 |
+| Pixel-scale noise, flat wall / dark doorway | 3.96 / 1.09 | 4.75 / 1.16 |
+| Mean saturation | 159 | 167 |
+
+Still different: highlights are brighter than Google's (99th percentile 228 against 206), midtone noise is slightly higher, and Google renders this room's light warmer (its wall is about 6% less blue than ours); colour is not tuned. Google also applies local tone mapping that a global curve only approximates. The tone curve and look were fitted on this one scene (exposure varies burst to burst, so repeat bursts land a few levels apart). The CPU fallback renderer has the black point, contrast, saturation and curve but not the sharpening and denoising.
