@@ -134,6 +134,9 @@ public object IxRender {
         return max((wh * gh + wv * gv) / (wh + wv), 0f)
     }
 
+    /** How far a pixel's raw signal (0 black, 1 the sensor's limit) is into clipping: 0 below 0.92 of the limit, 1 at the limit, smooth between. */
+    internal fun smoothClip(raw: Float): Float { val t = ((raw - 0.92f) / 0.08f).coerceIn(0f, 1f); return t * t * (3f - 2f * t) }
+
     /** Linear light to the sRGB transfer curve (0..1). */
     public fun srgbEncode(x: Float): Float { val c = x.coerceIn(0f, 1f); return if (c <= 0.0031308f) 12.92f * c else (1.055 * c.toDouble().pow(1.0 / 2.4) - 0.055).toFloat() }
 
@@ -209,7 +212,12 @@ public object IxRender {
                 val other = gr + (w1 * k1 + w2 * k2) / (w1 + w2)
                 if (c == 0) { r = v; b = other } else { b = v; r = other }
             }
-            val wr = max(r, 0f) * s.wb[0]; val wg = max(gr, 0f) * s.wb[1]; val wb = max(b, 0f) * s.wb[2]
+            var wr = max(r, 0f) * s.wb[0]; var wg = max(gr, 0f) * s.wb[1]; var wb = max(b, 0f) * s.wb[2]
+            // A lamp or a bright sky clips the sensor, green first. White balance then multiplies red and blue by gains above 1 while the clipped green
+            // stays where it clipped, so the blown area turns magenta. Where the raw signal is at or near its limit the colour is no longer known, so it is
+            // eased toward white (every channel to the brightest of the three): a clipped lamp is white, as a lamp is.
+            val clipMix = smoothClip(max(r, max(gr, b)))
+            if (clipMix > 0f) { val top = max(wr, max(wg, wb)); wr += clipMix * (top - wr); wg += clipMix * (top - wg); wb += clipMix * (top - wb) }
             val cr = (m[0] * wr + m[1] * wg + m[2] * wb) * exposure
             val cg = (m[3] * wr + m[4] * wg + m[5] * wb) * exposure
             val cb = (m[6] * wr + m[7] * wg + m[8] * wb) * exposure

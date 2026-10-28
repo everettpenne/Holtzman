@@ -50,6 +50,18 @@ class GpuRenderTest {
         }
     }
 
+    @Test fun aClippedHighlightRendersNeutralOnTheGpuToo() {
+        assumeNotNull(gl)
+        val raw = ShortArray(w * h) { 1023 }
+        val s = IxRenderSettings(IxCfa.RGGB, intArrayOf(64, 64, 64, 64), 1023, floatArrayOf(1.7f, 1f, 1.9f), floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f), null, look = IxLook())
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            val bmp = gpu.toBitmap(raw, w, h, s, 1f)
+            val p = bmp.getPixel(w / 2, h / 2)
+            val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
+            assertTrue("r=$r g=$g b=$b", Math.abs(r - g) <= 2 && Math.abs(b - g) <= 2)
+        }
+    }
+
     @Test fun theBaseRenderMatchesTheCpuRenderer() {
         assumeNotNull(gl)
         val raw = mosaic(0f, 1)

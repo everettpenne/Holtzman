@@ -630,6 +630,9 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     if (c == 0) { r = v; b = other; } else { b = v; r = other; }
                 }
                 vec3 w = vec3(max(r, 0.0) * wb.x, max(gr, 0.0) * wb.y, max(b, 0.0) * wb.z);
+                // clipped highlights (see IxRender): where the raw signal is at its limit the colour is unknown, so ease it toward white, not magenta
+                float clipMix = smoothstep(0.92, 1.0, max(r, max(gr, b)));
+                w = mix(w, vec3(max(w.x, max(w.y, w.z))), clipMix);
                 vec3 o = (ccm * w) * exposure;
                 if (hasLtm == 1) {
                     // the brightness of the neighbourhood (a smoothed, edge-preserving map at 1/16 resolution), sampled bilinearly

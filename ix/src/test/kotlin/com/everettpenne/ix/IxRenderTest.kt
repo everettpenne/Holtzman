@@ -72,4 +72,26 @@ class IxRenderTest {
             try { bad(); error("should have been refused") } catch (_: IllegalArgumentException) {}
         }
     }
+
+    @Test fun aClippedHighlightRendersNeutralNotMagenta() {
+        // every sample at the sensor's limit (a blown-out lamp), with white balance gains above 1 on red and blue: without the highlight rule this
+        // renders magenta (red and blue pushed past the clipped green)
+        val raw = ShortArray(w * h) { 1023 }
+        val s = IxRenderSettings(IxCfa.RGGB, intArrayOf(64, 64, 64, 64), 1023, floatArrayOf(1.7f, 1f, 1.9f), ident, null)
+        val out = IntArray(w * h)
+        IxRender.renderRows(raw, w, h, 0, h, s, 1f, out)
+        val p = out[(h / 2) * w + w / 2]
+        val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
+        assertTrue("r=$r g=$g b=$b", Math.abs(r - g) <= 2 && Math.abs(b - g) <= 2)
+    }
+
+    @Test fun anUnclippedRedStaysRed() {
+        // a saturated red scene well below the limit must keep its colour
+        val raw = ShortArray(w * h) { i -> if ((i % w) % 2 == 0 && (i / w) % 2 == 0) 700 else 90 }
+        val s = IxRenderSettings(IxCfa.RGGB, intArrayOf(64, 64, 64, 64), 1023, floatArrayOf(1f, 1f, 1f), ident, null)
+        val out = IntArray(w * h)
+        IxRender.renderRows(raw, w, h, 0, h, s, 1f, out)
+        val p = out[(h / 2) * w + w / 2]
+        assertTrue("red ${(p shr 16) and 255} green ${(p shr 8) and 255}", ((p shr 16) and 255) > ((p shr 8) and 255) + 40)
+    }
 }
