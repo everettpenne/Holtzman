@@ -52,6 +52,14 @@ public object IxRender {
     /** R at a B site, or B at an R site. */
     private val RB_AT_BR = taps(listOf(0 to -2 to -1.5, -1 to -1 to 2.0, 1 to -1 to 2.0, -2 to 0 to -1.5, 0 to 0 to 6.0, 2 to 0 to -1.5, -1 to 1 to 2.0, 1 to 1 to 2.0, 0 to 2 to -1.5))
 
+    /** One tap of a demosaic kernel: the neighbour at ([dx], [dy]) contributes [weight] times its value. */
+    public class Tap(public val dx: Int, public val dy: Int, public val weight: Float)
+
+    /** The demosaic kernels by name, for a renderer that runs elsewhere (the GPU) to build the same filters from the same numbers. */
+    public val kernels: Map<String, List<Tap>> = mapOf(
+        "greenAtRedBlue" to G_AT_RB, "rbAtGreenSameRow" to RB_AT_G_SAMEROW, "rbAtGreenSameCol" to RB_AT_G_SAMECOL, "rbAtBlueRed" to RB_AT_BR,
+    ).mapValues { (_, t) -> t.w.indices.map { Tap(t.dx[it], t.dy[it], t.w[it]) } }
+
     private class Taps(val dx: IntArray, val dy: IntArray, val w: FloatArray)
     private fun taps(list: List<Pair<Pair<Int, Int>, Double>>) = Taps(IntArray(list.size) { list[it].first.first }, IntArray(list.size) { list[it].first.second }, FloatArray(list.size) { (list[it].second / 8.0).toFloat() })
 

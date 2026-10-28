@@ -51,14 +51,40 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val refRaw = ShortArray(merged.width * merged.height).also { frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) }
             val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings)
             val tRender = System.nanoTime()
-            val mergedBitmap = BurstRender.toBitmap(merged.samples, merged.width, merged.height, settings, exposure)
+            val (mergedBitmap, refBitmap) = renderBoth(merged.samples, refRaw, merged.width, merged.height, settings, exposure)
             val mergedJpeg = saver.writeJpeg("${base}_burst.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
-            val refBitmap = BurstRender.toBitmap(refRaw, merged.width, merged.height, settings, exposure)
             val refJpeg = saver.writeJpeg("${base}_ref.jpg", timeMillis, refBitmap, 95, orientation); refBitmap.recycle()
             Log.i("HoltzmanBurst", "rendered two pictures in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")
             val ms = (System.nanoTime() - started) / 1_000_000
             Log.i("HoltzmanBurst", "merged ${frames.size} frames in $ms ms, mean frames per cell ${merged.meanFrames}, reference $ref")
             return BurstOutcome(mergedUri, refUri, mergedJpeg, refJpeg, ms, merged.meanFrames, frames.size)
+        }
+    }
+
+    /**
+     * Renders the merged and reference mosaics on the GPU, and checks the first against the CPU renderer on one band of rows (the log says how far
+     * apart they are); if the GPU cannot do it on this device, both come from the CPU renderer.
+     */
+    private fun renderBoth(merged: ShortArray, ref: ShortArray, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float): Pair<android.graphics.Bitmap, android.graphics.Bitmap> {
+        try {
+            GpuRender().use { gpu ->
+                val t0 = System.nanoTime()
+                val a = gpu.toBitmap(merged, w, h, s, exposure)
+                val t1 = System.nanoTime()
+                val b = gpu.toBitmap(ref, w, h, s, exposure)
+                Log.i("HoltzmanBurst", "GPU render: merged ${(t1 - t0) / 1_000_000} ms, reference ${(System.nanoTime() - t1) / 1_000_000} ms")
+                // check one band against the CPU renderer: rounding may differ by a level, anything more is a bug
+                val y0 = (h / 2) and 1.inv(); val rows = 32
+                val cpu = IntArray(rows * w); com.everettpenne.ix.IxRender.renderRows(merged, w, h, y0, y0 + rows, s, exposure, cpu)
+                val gpuPx = IntArray(rows * w); a.getPixels(gpuPx, 0, w, 0, y0, w, rows)
+                var worst = 0; var off = 0
+                for (i in cpu.indices) for (shift in intArrayOf(0, 8, 16)) { val d = Math.abs(((cpu[i] shr shift) and 255) - ((gpuPx[i] shr shift) and 255)); if (d > worst) worst = d; if (d > 1) off++ }
+                Log.i("HoltzmanBurst", "GPU vs CPU on $rows rows: largest channel difference $worst, ${off} channel values off by more than 1")
+                return a to b
+            }
+        } catch (t: Throwable) {
+            Log.w("HoltzmanBurst", "GPU render unavailable, using the CPU: $t")
+            return BurstRender.toBitmap(merged, w, h, s, exposure) to BurstRender.toBitmap(ref, w, h, s, exposure)
         }
     }
 

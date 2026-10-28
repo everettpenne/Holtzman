@@ -93,3 +93,14 @@ Consequence: an ahead-of-time compile on the Mac would not obviously help, since
 - So the refusal is a Google-side allowlist on on-device (JIT) compilation, not a GrapheneOS setting and not our model. AOT-compiled models are not subject to it.
 - The route to AOT is the Google Tensor SDK Beta (sign-up form; Linux x86_64 with Bazel). Its documentation lists Tensor G5 and G6 only; the Pixel 10a's chip is not named there, so whether AOT works on it is unknown.
 - GrapheneOS has a "Special app access" toggle for Google apps' direct Tensor access; reports say it does not gate ordinary apps, and one Pixel 10 Pro Fold user reported CPU-only local LLMs. Nothing found ties error 16 to GrapheneOS.
+
+## GPU render pass (Pixel 10a, OpenGL ES 3.1 compute, `save/GpuRender.kt`)
+
+The render stage now runs as two compute passes (counts to linear with shading; demosaic, white balance, colour matrix, tone, sRGB). The demosaic taps are generated from `IxRender.kernels`, so the CPU and GPU renderers use the same numbers. If the GPU path throws, the burst falls back to the CPU renderer.
+
+| Stage, one 12 MP picture | CPU | GPU |
+|---|---|---|
+| Render | about 3.4 s | merged 163 ms, reference 103 ms (the first includes shader compile) |
+| Whole burst, shutter to both JPEGs and DNGs saved | 8.5 s | 3.0 s (merge 1.3 s) |
+
+Equivalence check, run on every burst: 32 rows of the merged picture rendered by the CPU renderer and compared with the GPU's: largest channel difference 1 level, none beyond 1 (rounding). This burst was at ISO 117, a bright scene, not the ISO ~860 one the noise model was fitted on; 5.999 of 6 frames contributed per cell, so at low ISO the model is lenient. Shot noise scaling with ISO is still not modelled.
