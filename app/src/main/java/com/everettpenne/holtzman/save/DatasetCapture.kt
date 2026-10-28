@@ -20,10 +20,10 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** What a dataset shot is for. */
-enum class DatasetKind(val label: String, val detail: String) {
-    HANDHELD("Handheld burst", "6 RAW frames as the camera exposes them. For the merge, alignment and motion."),
-    CLEAN("Clean reference", "40 RAW frames at a low ISO, one fixed exposure. Tripod: they average into a near noise-free picture."),
-    LADDER("ISO ladder", "2 RAW frames at each of ISO 100 to 3200, equal brightness. Tripod: for the noise model."),
+enum class DatasetKind(val label: String, val detail: String, val short: String) {
+    HANDHELD("Handheld burst", "6 RAW frames as the camera exposes them. For the merge, alignment and motion.", "6 frames, as you would shoot"),
+    CLEAN("Clean reference", "40 RAW frames at a low ISO, one fixed exposure. Tripod: they average into a near noise-free picture.", "40 frames of a still scene; tripod"),
+    LADDER("ISO ladder", "2 RAW frames at each of ISO 100 to 3200, equal brightness. Tripod: for the noise model.", "2 frames at each ISO; tripod"),
 }
 
 /** The words a scene can be tagged with, so the set can be sliced later. */

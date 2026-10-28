@@ -16,8 +16,10 @@ android {
         // The Pixel 10a first (Android 17). Android 14+ because Ultra HDR needs the Gainmap API; nothing below is promised.
         minSdk = 34
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.2.0"
+        // this phone (and every Pixel since the 6) is 64-bit ARM; dropping the other ABIs leaves out about 25 MB of unused native code
+        ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -39,6 +41,8 @@ android {
         }
         getByName("debug") { applicationIdSuffix = ".next"; isDebuggable = false }
     }
+    // the denoiser model is read straight from the APK by the interpreter, so it must stay uncompressed
+    androidResources { noCompress += "tflite" }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

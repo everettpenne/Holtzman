@@ -1,57 +1,88 @@
 package com.everettpenne.holtzman.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.everettpenne.glass.GlassButton
+import com.everettpenne.glass.GlassChip
+import com.everettpenne.glass.GlassGroup
+import com.everettpenne.glass.GlassListRow
+import com.everettpenne.glass.GlassRowDivider
+import com.everettpenne.glass.GlassSectionHeader
 import com.everettpenne.glass.GlassSheet
 import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.save.DatasetKind
 import com.everettpenne.holtzman.save.DatasetTags
 
-/** What the next dataset shot will be: its kind, its tags and a note. The shutter takes it. */
+/**
+ * Dataset capture: pick what to capture, tag the scene, and start. While it is on, the shutter saves RAW frames and their metadata instead of a photo,
+ * into Documents/Holtzman/Dataset, with a preview picture beside them so the Files app shows what each scene is.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DatasetSheet(
-    kind: DatasetKind, onKind: (DatasetKind) -> Unit,
+    active: Boolean, kind: DatasetKind, onKind: (DatasetKind) -> Unit,
     tags: Set<String>, onTag: (String) -> Unit,
-    note: String, onNote: (String) -> Unit,
-    onDismiss: () -> Unit,
+    note: String, onNote: (String) -> Unit, saved: Int,
+    onStart: () -> Unit, onStop: () -> Unit, onCalibrate: () -> Unit, onDismiss: () -> Unit,
 ) {
     GlassSheet(onDismiss) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Dataset capture", style = IosType.title2)
-            Text("Saves RAW frames and their metadata, unprocessed, to Documents/Holtzman/Dataset. Tripod for the last two kinds.", style = IosType.footnote)
-            DatasetKind.values().forEach { k ->
-                val on = k == kind
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (on) Holtzman.accent else Color.Black.copy(alpha = .08f)).clickable { onKind(k) }.padding(14.dp)) {
-                    Text(k.label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.Unspecified)
-                    Text(k.detail, style = IosType.footnote, color = if (on) Color.Black.copy(alpha = .75f) else Color.Unspecified)
+        Column(Modifier.heightIn(max = 680.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
+            Text("Dataset capture", style = IosType.title2, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+            Text("Saves unprocessed RAW frames and their metadata, with a preview, to tune the camera. They go to Documents/Holtzman/Dataset.",
+                style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp))
+
+            GlassSectionHeader("What to capture")
+            GlassGroup {
+                DatasetKind.values().forEachIndexed { i, k ->
+                    if (i > 0) GlassRowDivider()
+                    GlassListRow(k.label, subtitle = k.short, onClick = { onKind(k) }, trailing = {
+                        if (k == kind) Icon(Icons.Rounded.CheckCircle, "Selected", tint = Holtzman.accent)
+                    })
                 }
             }
-            Text("Lighting", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { DatasetTags.LIGHT.forEach { TagChip(it, it in tags) { onTag(it) } } }
-            Text("Subject", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { DatasetTags.SUBJECT.forEach { TagChip(it, it in tags) { onTag(it) } } }
-            OutlinedTextField(note, onNote, Modifier.fillMaxWidth(), label = { Text("Note (what and where)") }, singleLine = true)
-            Spacer(Modifier.height(8.dp))
+
+            GlassSectionHeader("Lighting")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 4.dp)) {
+                DatasetTags.LIGHT.forEach { t -> GlassChip(t in tags, { onTag(t) }) { Text(t) } }
+            }
+            GlassSectionHeader("Subject")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 4.dp)) {
+                DatasetTags.SUBJECT.forEach { t -> GlassChip(t in tags, { onTag(t) }) { Text(t) } }
+            }
+
+            GlassSectionHeader("Note")
+            GlassGroup {
+                TextField(note, onNote, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("What and where (optional)") },
+                    colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
+            }
+
+            Spacer(Modifier.height(18.dp))
+            if (!active) GlassButton("Start capturing", onStart, Modifier.fillMaxWidth(), prominent = true)
+            else {
+                GlassButton("Done", onDismiss, Modifier.fillMaxWidth(), prominent = true)
+                Spacer(Modifier.height(8.dp))
+                GlassButton("Stop dataset capture", onStop, Modifier.fillMaxWidth())
+            }
+            if (saved > 0) Text("$saved saved this session", style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp, top = 10.dp))
+
+            GlassSectionHeader("Tools")
+            GlassGroup {
+                GlassListRow("Calibrate the noise model", subtitle = "Two frames at each ISO; phone on a tripod", onClick = onCalibrate,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
+            }
         }
     }
-}
-
-@Composable
-private fun TagChip(label: String, on: Boolean, onClick: () -> Unit) {
-    Text(label, style = IosType.footnote.copy(fontWeight = FontWeight.Medium), color = if (on) Color.Black else Color.Unspecified,
-        modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) Holtzman.accent else Color.Black.copy(alpha = .08f)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp))
 }

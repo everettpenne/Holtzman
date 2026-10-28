@@ -318,3 +318,8 @@ Inspected on the phone: nothing was failing. Between 14:10 and 14:16 the app had
 **On the phone** (`TpuDenoiser`): the whole graph (all nine operations) runs on the TPU through NNAPI in one partition: 1 ms per 256 x 256 tile against 23 ms on the CPU in 8 bits and 111 ms in float; 8-bit output is bit-identical to the CPU's, float differs by 0.07% (16-bit hardware). A 12 MP mosaic is 63 tiles; preparing the tiles' features and writing results back is the real cost, first 2.8 s in plain Kotlin, now 0.7 to 0.8 s with bulk copies and four worker threads. A whole shot takes about 2.0 s (1.5 s with the classical denoise), stable over repeated bursts; the denoiser is loaded once at app start. If the model or the driver is missing, or a tile run fails, the classical denoise runs instead.
 
 **Caveats.** Trained on 22 scenes, indoor and dim for the most part; outdoor and very bright scenes (little noise) are barely represented, so there the network should do close to nothing, which has not been checked on pictures. The network was trained on inputs averaged from up to 4 frames and is used on a 6-frame merge, which is less noisy than anything it saw. Tuned for this sensor and its measured noise model. NNAPI is deprecated since Android 15.
+
+## 0.2.0 (2026-10-28, local only, not released)
+- Learned denoiser (int8, NNAPI → Edge TPU) is the default; minified release build on the Pixel 10a logs "learned denoise on the TPU in 638 ms", ~2.2 s per 6-frame shot, no "unavailable" warnings.
+- UI redesign: settings sheet, camera report sheet, restructured dataset sheet, icon top bar.
+- arm64-v8a only; `noCompress tflite` so the interpreter can map the model.

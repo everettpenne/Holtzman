@@ -86,12 +86,14 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val controller = remember { CameraController(context) }
     val saver = remember { PhotoSaver(context.contentResolver) }
     var lens by remember { mutableStateOf(Lens.BACK) }
-    var raw by remember { mutableStateOf(false) }
+    val prefs = remember { context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE) }
+    var raw by remember { mutableStateOf(prefs.getBoolean("raw", false)) }
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
-    var hdr by remember { mutableStateOf(true) }
-    // the computational burst is the normal way to take a photo; the chip turns it off for a quick single frame
-    var burst by remember { mutableStateOf(true) }
+    var hdr by remember { mutableStateOf(prefs.getBoolean("hdr", true)) }
+    // the computational burst is the normal way to take a photo; a setting turns it off for a quick single frame
+    var burst by remember { mutableStateOf(prefs.getBoolean("computational", true)) }
+    LaunchedEffect(raw, hdr, burst) { prefs.edit().putBoolean("raw", raw).putBoolean("hdr", hdr).putBoolean("computational", burst).apply() }
     var dataset by remember { mutableStateOf(false) }
     var showDataset by remember { mutableStateOf(false) }
     var datasetKind by remember { mutableStateOf(com.everettpenne.holtzman.save.DatasetKind.HANDHELD) }
@@ -120,13 +122,16 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var last by remember { mutableStateOf<Saved?>(null) }
-    var showProbe by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showReport by remember { mutableStateOf(false) }
     var deviceDegrees by remember { mutableIntStateOf(0) }
     val qualities = remember(lens) { controller.videoQualitiesFor(lens) }
     LaunchedEffect(qualities) { if (quality == null || quality !in qualities) quality = defaultVideoQuality(qualities) }
     val nightAvailable = remember(lens) { android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT in controller.extensionsFor(lens) }
     // a lens without Night turns Night off
     LaunchedEffect(nightAvailable) { if (!nightAvailable) night = false }
+    // Night (the vendor's own pipeline) and the computational burst are alternatives; turning Night off brings the burst back
+    val computational = burst && !night
     val nightExtension = if (night && nightAvailable) android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_NIGHT else null
     LaunchedEffect(lens, nightExtension) { zoom = 1f }
     val previewShape = remember(lens, nightExtension, videoMode) { controller.previewSizeFor(lens, if (videoMode) null else nightExtension, videoMode) }
@@ -145,7 +150,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, hdr, burst, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
+    LaunchedEffect(surfaceReady, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
         if (surfaceReady == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { shape ->
             val holder = surfaceReady ?: return@let
@@ -156,7 +161,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             }
         }
         val surface = surfaceReady?.surface ?: run { controller.close(); return@LaunchedEffect }
-        controller.open(lens, surface, raw || hdr || burst || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, burst || dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw || hdr || computational || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational || dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -238,7 +243,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
         if (dataset) { shootDataset(); return }
-        if (burst && controller.rawAvailable) { shootBurst(); return }
+        if (computational && controller.rawAvailable) { shootBurst(); return }
         busy = true
         if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
@@ -247,7 +252,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 // Ultra HDR is built from the RAW taken beside the JPEG, only at 1x (the RAW frame is not cropped by the zoom, so the two would not line up)
                 val wantHdr = hdr && !night && still.raw != null && kotlin.math.abs(zoom - 1f) < 0.02f
                 val hdrBytes = if (wantHdr) UltraHdr.build(still) else null
-                val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw) }
+                val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw && !night) }
                 withContext(Dispatchers.Main) {
                     busy = false
                     saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" } }.onFailure { status = "Couldn't save: ${it.message}" }
@@ -314,53 +319,68 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         })
         if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
 
-        // top: the probe, and what the camera is saying
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
-            if (dataset) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Calibrate noise") { calibrateNoise() } }
-            if (dataset) { Spacer(Modifier.width(8.dp)); Pill(Icons.Rounded.Analytics, "Dataset options") { showDataset = true } }
+        // top bar: settings on the left; flash, timer and grid on the right
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            BarButton(Icons.Rounded.Tune, "Settings", on = false) { showSettings = true }
             Spacer(Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
-                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) dataset = false }
-                if (!videoMode && !night) Chip(if (dataset && datasetSaved > 0) "DATA $datasetSaved" else "DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
-                if (!videoMode && !night && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
-                if (!videoMode && !night && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (videoMode) quality?.let { q -> TextPill(q.label, enabled = !recording && qualities.size > 1) { quality = q.next(qualities) } }
+                if (!videoMode && flashAvailable && !night) BarButton(when (flash) { FlashMode.OFF -> Icons.Rounded.FlashOff; FlashMode.AUTO -> Icons.Rounded.FlashAuto; FlashMode.ON -> Icons.Rounded.FlashOn },
+                    when (flash) { FlashMode.OFF -> "Flash off"; FlashMode.AUTO -> "Flash auto"; FlashMode.ON -> "Flash on" }, on = flash != FlashMode.OFF) { flash = flash.next() }
+                if (!videoMode) BarButton(Icons.Rounded.Timer, if (timer == TimerMode.OFF) "Timer off" else "Timer ${timer.label}", on = timer != TimerMode.OFF, badge = if (timer == TimerMode.OFF) null else timer.seconds.toString()) { timer = timer.next() }
+                BarButton(if (grid) Icons.Rounded.GridOn else Icons.Rounded.GridOff, if (grid) "Grid on" else "Grid off", on = grid) { grid = !grid }
             }
         }
-        // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture
-        Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (videoMode) quality?.let { q -> Chip(q.label, false, enabled = !recording && qualities.size > 1) { quality = q.next(qualities) } }
-            if (!videoMode && flashAvailable && !night) Chip(when (flash) { FlashMode.OFF -> "⚡ Off"; FlashMode.AUTO -> "⚡ Auto"; FlashMode.ON -> "⚡ On" }, flash != FlashMode.OFF, enabled = true) { flash = flash.next() }
-            if (!videoMode) Chip(if (timer == TimerMode.OFF) "Timer" else timer.label, timer != TimerMode.OFF, enabled = true) { timer = timer.next() }
-            Chip("Grid", grid, enabled = true) { grid = !grid }
+        // what the camera is doing, centred over the picture: a dataset session, then any message
+        Column(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (dataset && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).clickable { showSettings = false; showDataset = true }.padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.size(8.dp).background(Holtzman.accent, CircleShape))
+                Text("Dataset  \u00B7  ${datasetKind.label}" + if (datasetSaved > 0) "  \u00B7  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
+            }
+            if (night && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(Icons.Rounded.NightsStay, null, tint = Holtzman.accent, modifier = Modifier.size(14.dp)); Text("Night", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+            }
+            status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp).background(Color.Black.copy(alpha = .7f), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) }
         }
-        status?.let { Text(it, style = IosType.subheadline, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 120.dp)
-            .background(Color.Black.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) }
-
         // recording clock
-        if (recording) Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 120.dp).background(Color.Black.copy(alpha = .55f), RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (recording) Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 70.dp).background(Color.Black.copy(alpha = .6f), CircleShape).padding(horizontal = 14.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(10.dp).background(Holtzman.red, CircleShape)); Spacer(Modifier.width(8.dp))
             Text(recordingClock(elapsed), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
         }
-        // PHOTO / VIDEO
-        Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 196.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            listOf(false to "PHOTO", true to "VIDEO").forEach { (v, label) ->
-                Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (videoMode == v) Holtzman.accent else Color.White.copy(alpha = .75f),
-                    modifier = Modifier.clickable(enabled = !recording && videoMode != v) { videoMode = v; if (v) { night = false; hdr = false } }.padding(8.dp))
+        // zoom: one pill on the picture's lower edge with the stops the camera offers; the ratio now applied is lit
+        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
+            val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
+            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp).clip(CircleShape).background(Color.Black.copy(alpha = .45f)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                stops.forEach { stop ->
+                    val on = kotlin.math.abs(zoom - stop) < 0.05f
+                    Box(Modifier.size(width = 46.dp, height = 36.dp).clip(CircleShape).background(if (on) Color.White.copy(alpha = .22f) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }, contentAlignment = Alignment.Center) {
+                        Text(if (stop == 1f) "1\u00D7" else if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}\u00D7", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Holtzman.accent else Color.White)
+                    }
+                }
+                if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
+                    Box(Modifier.size(width = 56.dp, height = 36.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f), CircleShape), contentAlignment = Alignment.Center) {
+                        Text("%.1f\u00D7".format(java.util.Locale.ROOT, zoom), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Holtzman.accent)
+                    }
             }
         }
-        // zoom: the stops the camera offers, and the ratio now applied
-        Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 140.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            zoomStops(zoomRange.start, zoomRange.endInclusive).forEach { stop ->
-                val on = kotlin.math.abs(zoom - stop) < 0.05f
-                Text(if (stop == 1f) "1×" else if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}×", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (on) Holtzman.accent else Color.White,
-                    modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .5f)).clickable { zoom = controller.setZoom(stop) }.padding(horizontal = 14.dp, vertical = 9.dp))
+        // PHOTO / VIDEO, with the small switches for this shot above the shutter
+        Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 126.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!videoMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (nightAvailable) ShotToggle("Night", night, Icons.Rounded.NightsStay) { night = !night }
+                if (!night) ShotToggle("HDR", hdr, Icons.Rounded.HdrOn) { hdr = !hdr }
+                if (!night && (rawAvailable || raw)) ShotToggle("RAW", raw, Icons.Rounded.RawOn) { raw = !raw }
             }
-            if (zoomStops(zoomRange.start, zoomRange.endInclusive).none { kotlin.math.abs(zoom - it) < 0.05f })
-                Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Holtzman.accent,
-                    modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .5f)).padding(horizontal = 14.dp, vertical = 9.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                listOf(false to "PHOTO", true to "VIDEO").forEach { (v, label) ->
+                    val on = videoMode == v
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(enabled = !recording && !on) { videoMode = v; if (v) { night = false } }.padding(vertical = 4.dp, horizontal = 4.dp)) {
+                        Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp), color = if (on) Holtzman.accent else Color.White.copy(alpha = .7f))
+                        Box(Modifier.padding(top = 4.dp).size(width = 18.dp, height = 3.dp).background(if (on) Holtzman.accent else Color.Transparent, CircleShape))
+                    }
+                }
+            }
         }
 
         // bottom: the last photo, the shutter, the other lens
@@ -377,20 +397,46 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
         }
     }
-    if (showDataset) DatasetSheet(datasetKind, { datasetKind = it }, datasetTags, { t -> datasetTags = if (t in datasetTags) datasetTags - t else datasetTags + t }, datasetNote, { datasetNote = it }, onDismiss = { showDataset = false })
-    if (showProbe) ProbeSheet(onDismiss = { showProbe = false }, onCompare = { showProbe = false; shoot(highQuality = false); scope.launch { delay(2500); shoot(highQuality = true) } })
+    if (showSettings) SettingsSheet(
+        computational = burst, onComputational = { burst = it },
+        hdr = hdr, onHdr = { hdr = it },
+        raw = raw, rawAvailable = rawAvailable, onRaw = { raw = it },
+        datasetOn = dataset, datasetKind = datasetKind.label, datasetSaved = datasetSaved,
+        onDataset = { showSettings = false; showDataset = true },
+        onReport = { showSettings = false; showReport = true },
+        onCompare = { showSettings = false; shoot(highQuality = false); scope.launch { delay(2500); shoot(highQuality = true) } },
+        onDismiss = { showSettings = false })
+    if (showDataset) DatasetSheet(
+        active = dataset, kind = datasetKind, onKind = { datasetKind = it },
+        tags = datasetTags, onTag = { t -> datasetTags = if (t in datasetTags) datasetTags - t else datasetTags + t },
+        note = datasetNote, onNote = { datasetNote = it }, saved = datasetSaved,
+        onStart = { dataset = true; showDataset = false }, onStop = { dataset = false; showDataset = false },
+        onCalibrate = { showDataset = false; calibrateNoise() },
+        onDismiss = { showDataset = false })
+    if (showReport) CameraReportSheet(onDismiss = { showReport = false })
 }
 
+/** A round dark button for the bars over the picture; lit with the accent when its feature is on. */
 @Composable
-private fun Pill(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, onClick: () -> Unit) {
-    Box(Modifier.size(44.dp).clip(CircleShape).background(Color.Black.copy(alpha = .45f)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, description, tint = Color.White, modifier = Modifier.size(22.dp))
+private fun BarButton(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, on: Boolean, badge: String? = null, onClick: () -> Unit) {
+    Box(Modifier.size(42.dp).clip(CircleShape).background(if (on) Holtzman.accent.copy(alpha = .9f) else Color.Black.copy(alpha = .45f)).clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = if (on) Color.Black else Color.White, modifier = Modifier.size(22.dp))
+        if (badge != null) Text(badge, style = IosType.caption2.copy(fontWeight = FontWeight.Bold), color = Color.Black, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 3.dp))
     }
 }
 
 @Composable
-private fun Chip(label: String, on: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Text(label, maxLines = 1, softWrap = false, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White,
-        modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) Holtzman.accent else Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp))
+private fun TextPill(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Text(label, maxLines = 1, softWrap = false, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White,
+        modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp))
 }
 
+/** A small labelled switch for the next shot (Night, HDR, RAW): filled with the accent when on, a quiet outline when off. */
+@Composable
+private fun ShotToggle(label: String, on: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Row(Modifier.clip(CircleShape).background(if (on) Holtzman.accent else Color.White.copy(alpha = .12f)).border(1.dp, if (on) Color.Transparent else Color.White.copy(alpha = .22f), CircleShape)
+        .clickable(onClick = onClick).padding(start = 10.dp, end = 14.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Icon(icon, null, tint = if (on) Color.Black else Color.White, modifier = Modifier.size(16.dp))
+        Text(label, maxLines = 1, softWrap = false, style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White)
+    }
+}
