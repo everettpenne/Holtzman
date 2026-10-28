@@ -81,7 +81,7 @@ class GpuMerge(private val gl: GlContext) {
                 gl.setInts(accumulate, "cells", cw, ch); gl.setInts(accumulate, "width", width); gl.setInts(accumulate, "black", *black)
                 gl.setInts(accumulate, "tilesX", tilesX); gl.setInts(accumulate, "tile", t); gl.setInts(accumulate, "first", if (first) 1 else 0)
                 GLES31.glUniform1f(gl.loc(accumulate, "shot"), params.shot); GLES31.glUniform1f(gl.loc(accumulate, "read"), params.read)
-                GLES31.glUniform1f(gl.loc(accumulate, "tol2"), params.tolerance * params.tolerance)
+                GLES31.glUniform1f(gl.loc(accumulate, "fullTrust"), params.fullTrust); GLES31.glUniform1f(gl.loc(accumulate, "noTrust"), params.noTrust)
                 gl.bind(0, raws[reference]); gl.bind(1, raws[f]); gl.bind(2, flow); gl.bind(3, acc); gl.bind(4, weights); gl.bind(5, counter)
                 GLES31.glDispatchCompute((cw + 15) / 16, (ch + 15) / 16, 1)
                 GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
@@ -238,7 +238,7 @@ class GpuMerge(private val gl: GlContext) {
             layout(std430, binding = 4) buffer Weights { float wsum[]; };
             layout(std430, binding = 5) buffer Counter { uint contributors; };
             uniform ivec2 cells; uniform int width; uniform ivec4 black; uniform int tilesX; uniform int tile; uniform int first;
-            uniform float shot; uniform float read; uniform float tol2;
+            uniform float shot; uniform float read; uniform float fullTrust; uniform float noTrust;
             shared uint localCount;
             $RAW
             uint altAt(int i) { uint wd = alt[i >> 1]; return (i & 1) == 0 ? (wd & 0xFFFFu) : (wd >> 16); }
@@ -259,8 +259,9 @@ class GpuMerge(private val gl: GlContext) {
                         int px = p.x * 2; int py = p.y * 2;
                         ivec4 b = ivec4(int(altAt(py * width + px)), int(altAt(py * width + px + 1)), int(altAt((py + 1) * width + px)), int(altAt((py + 1) * width + px + 1)));
                         float diff = float((b.x - black.x) + (b.y - black.y) + (b.z - black.z) + (b.w - black.w) - refSum);
-                        float wt = exp(-0.5 * diff * diff / (tol2 * varDiff / 9.0 + 1.0));
-                        if (wt < 0.02) wt = 0.0;
+                        float z = abs(diff) / sqrt(max(varDiff, 1e-6));
+                        float tt = clamp((noTrust - z) / (noTrust - fullTrust), 0.0, 1.0);
+                        float wt = tt * tt * (3.0 - 2.0 * tt);
                         if (wt > 0.0) { a += wt * vec4(b); ws += wt; atomicAdd(localCount, 1u); }
                     }
                     acc[o] = a; wsum[o] = ws;

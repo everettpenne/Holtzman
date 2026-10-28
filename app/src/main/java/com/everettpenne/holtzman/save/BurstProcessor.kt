@@ -81,7 +81,7 @@ class BurstProcessor(private val saver: PhotoSaver) {
                 val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU) 0f else RAW_DENOISE)
                 if (VERIFY_GPU) {
                     val t = System.nanoTime()
-                    val cpu = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(params.shot, params.read, params.tolerance, params.tileCells, params.searchCells))
+                    val cpu = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(params.shot, params.read, params.fullTrust, params.noTrust, params.tileCells, params.searchCells))
                     var worst = 0; var off = 0; var sum = 0L
                     for (i in cpu.samples.indices) { val d = Math.abs(cpu.samples[i].toInt() - gpu.samples[i].toInt()); if (d > worst) worst = d; if (d > 1) off++; sum += d }
                     Log.i("HoltzmanBurst", "GPU merge vs CPU merge (CPU took ${(System.nanoTime() - t) / 1_000_000} ms): largest difference $worst, $off of ${cpu.samples.size} samples differ by more than 1, mean difference ${"%.5f".format(java.util.Locale.ROOT, sum.toDouble() / cpu.samples.size)}, mean frames GPU ${gpu.meanFrames} CPU ${cpu.meanFrames}")

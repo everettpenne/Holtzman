@@ -45,8 +45,14 @@ public class IxMergeParams(
     /** Noise model of the RAW values: variance = [shot] * signal + [read]^2, in squared sensor counts. The defaults suit about ISO 860; [forIso] gives the Pixel 10a's back camera at any ISO. */
     public val shot: Float = 1.5f,
     public val read: Float = 3f,
-    /** How many noise standard deviations apart two frames may be before the other frame stops contributing: higher merges more (and ghosts more). */
-    public val tolerance: Float = 3f,
+    /**
+     * How a frame's weight in a cell falls with how far it differs from the reference, in noise standard deviations: full weight up to [fullTrust] (so
+     * ordinary noise never costs a frame its say), none beyond [noTrust] (something moved), smoothly between. A weight that already dropped at one
+     * deviation (the earlier rule) cost a full dB of the merge's noise reduction on a still scene; checked on a host: this rule matches plain
+     * averaging on still frames and keeps the rejection of a moving patch.
+     */
+    public val fullTrust: Float = 2.5f,
+    public val noTrust: Float = 4.5f,
     public val tileCells: Int = 16,
     /** Search distance in cells at half resolution (the coarse pass looks a quarter of this far at quarter resolution). */
     public val searchCells: Int = 8,
@@ -180,7 +186,6 @@ public object IxBurst {
         val flows = frames.mapIndexed { i, f -> if (i == reference) null else align(refPyramid, f, black, params).also { params.log("aligned frame $i at ${(System.nanoTime() - tStart) / 1_000_000} ms") } }
         var contributors = 0L
         val t = params.tileCells
-        val tol2 = params.tolerance * params.tolerance
         val maxShift = max(1, params.searchCells / 2) * 4 + 8   // the three-level search can move a tile this many cells
         val refBand = IxBand(w, t * 2)
         val altBands = frames.map { IxBand(w, t * 2 + 4 * maxShift) }
@@ -210,7 +215,9 @@ public object IxBurst {
                     val band = altBands[f]; val px = ax * 2; val py = ay * 2
                     val b0 = band.at(px, py); val b1 = band.at(px + 1, py); val b2 = band.at(px, py + 1); val b3 = band.at(px + 1, py + 1)
                     val diff = ((b0 - black[0]) + (b1 - black[1]) + (b2 - black[2]) + (b3 - black[3]) - refSum).toFloat()
-                    val wt = exp(-0.5f * diff * diff / (tol2 * varDiff / 9f + 1f)).let { if (it < 0.02f) 0f else it }
+                    val z = abs(diff) / sqrt(max(varDiff, 1e-6f))
+                    val tt = ((params.noTrust - z) / (params.noTrust - params.fullTrust)).coerceIn(0f, 1f)
+                    val wt = tt * tt * (3f - 2f * tt)
                     if (wt > 0f) { a0 += wt * b0; a1 += wt * b1; a2 += wt * b2; a3 += wt * b3; wsum += wt; contributors++ }
                 }
                 out[y * w + x] = (a0 / wsum + 0.5f).toInt().toShort(); out[y * w + x + 1] = (a1 / wsum + 0.5f).toInt().toShort()

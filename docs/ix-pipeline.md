@@ -230,3 +230,21 @@ The camera reports faces (`STATISTICS_FACES`; the 10a offers off, simple and ful
 The merge aligns frames to each other but cannot undo blur inside a frame, so in dim light with a shaky hand a long exposure is worse than shorter, noisier frames (which the merge averages). The gyroscope gives the phone's turning rate (`ShakeMonitor`: root mean square over about a quarter of a second). A turn of `rate` rad/s moves the picture `rate x focal length in pixels` pixels a second (focal length 4.53 mm over the 1.6 um pitch is about 2,830 px), so the longest exposure for at most 1.5 px of blur is `1.5 / (rate x 2830)` seconds, kept between 4 ms and 250 ms. An ordinary burst whose automatic exposure is longer than that is cut to it and the ISO raised in proportion (capped at 3200, where the noise model was measured); if the ISO tops out, the exposure grows back just enough to keep the brightness: a shaky dark scene gets some blur rather than a dark picture. The merge's noise parameters follow automatically from the reference frame's ISO. Fixed-exposure captures (the dataset's clean reference and ISO ladder) are not touched, and the dataset's `meta.json` records the shake rate at the start.
 
 Checked: the arithmetic with unit tests; on the phone the gyro reads (0.0035 rad/s sitting on a desk, which allows 150 ms, so nothing changed and no frame was altered). **Not checked in the hand**: whether 1.5 px is the right blur budget on a phone with optical stabilisation (which removes part of the shake the gyro sees), and how much the cut helps in a real dim, handheld scene. The budget is one constant (`maxBlurPx`) to tune from handheld bursts.
+
+## Frame weighting and the frequency-domain merge (2026-10-28, host-tested, not yet seen on the phone)
+
+Questions: would an HDR+-style frequency-domain merge (each tile's spectrum shrunk toward the reference by a Wiener gain) beat our spatial merge, and does dithering help? (`tools/prototypes/fm.py`.)
+
+**Dithering: not needed.** The histogram of our pictures has no empty levels between 16 and 240 in any channel (Google's is the same); the grain already acts as dither. Revisit only if a smooth-sky scene bands.
+
+**Merge test:** six frames of known pictures with noise from the measured ISO 800 model, merged, demosaiced, and scored (PSNR) against the noise-free picture:
+
+| scene | plain mean | our merge before | frequency-domain merge | **flat-top weights (shipped)** |
+|---|---|---|---|---|
+| frames perfectly still | 33.04 | 32.05 | 32.10 | **33.03** |
+| shaken by up to 1 px | 32.34 | 31.41 | 31.89 | **32.42** |
+| shaken, plus a patch that moved 6 px | 29.35 (ghosts) | 31.14 | 31.56 | **31.57** |
+
+The finding is not the one expected. The frequency-domain merge is worth less than a change to one line of our own: the old weight `exp(-0.5 d^2 / (tol^2 var/9 + 1))` with tolerance 3 is in effect a one-deviation rule, so ordinary noise alone already pulls a frame's weight down (average about 0.7) and costs a full dB on a still scene. The new weight is 1 up to 2.5 noise deviations of the cell-sum difference, falls smoothly to 0 at 4.5, and so gives pure noise full say while a real difference (a moving patch) is still rejected. It matches the plain mean on still frames, gains 1 dB over before in both still and shaken cases, and keeps the ghost rejection (which plain averaging loses). It beats the frequency-domain merge in all three, at none of its cost. A unit test (six still noisy frames must reduce noise by at least 2.3x; the ideal is 2.45x; the old rule fails it) pins this.
+
+Changed in the CPU merge (`IxMergeParams.fullTrust`/`noTrust`, replacing `tolerance`) and in the GPU accumulate shader; the emulator test that compares the GPU merge with the CPU engine passes. On the phone the reported "mean frames per cell" (about 5.98 of 6) should now be near 6 and noise a little lower: to be checked. If real noise runs above the measured model, a frame's difference would read as larger than it is and the rule would reject more; the 2.5-deviation margin allows the noise to be about 1.5 times the model before that shows.

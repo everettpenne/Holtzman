@@ -92,3 +92,24 @@ class IxBurstTest {
         assertEquals(0, IxBurst.sharpest(listOf(sharp, blurred))); assertEquals(1, IxBurst.sharpest(listOf(blurred, sharp)))
     }
 }
+
+class IxMergeNoiseTest {
+    private val w = 128; private val h = 96
+    private val black = intArrayOf(64, 64, 64, 64)
+
+    @org.junit.Test fun sixStillFramesReduceNoiseCloseToTheIdeal() {
+        val params = mergeParamsForIso(800)
+        val signal = 200f
+        val frames = List(6) { f ->
+            val rnd = java.util.Random(100L + f)
+            ShortArray(w * h) { (64f + signal + rnd.nextGaussian().toFloat() * Math.sqrt((params.shot * signal + params.read * params.read).toDouble()).toFloat()).toInt().toShort() }
+        }
+        val planes = frames.map { IxPlane(java.nio.ShortBuffer.wrap(it), w, h) }
+        val merged = IxBurst.merge(planes, 0, black, params)
+        fun std(a: ShortArray): Double { var s = 0.0; var q = 0.0; for (v in a) { s += v; q += v.toDouble() * v }; val n = a.size; return Math.sqrt(q / n - (s / n) * (s / n)) }
+        val ratio = std(frames[0]) / std(merged.samples)
+        // the ideal for 6 frames is sqrt(6) = 2.45; a weight that already falls at one noise deviation (the earlier rule) managed only about 2.0
+        org.junit.Assert.assertTrue("noise reduced by $ratio", ratio > 2.3)
+        org.junit.Assert.assertTrue("frames per cell ${merged.meanFrames}", merged.meanFrames > 5.8f)
+    }
+}
