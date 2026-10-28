@@ -137,6 +137,9 @@ class DatasetCapture(private val controller: CameraController, private val saver
         r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { t -> o.put("ccm", JSONArray((0 until 9).map { i -> t.getElement(i % 3, i / 3).toDouble() })) }
         // the camera's own noise model for this frame: (S, O) per colour channel, variance = S * signal + O in normalised units
         r.get(CaptureResult.SENSOR_NOISE_PROFILE)?.let { np -> o.put("noiseProfile", JSONArray(np.map { p -> JSONArray(listOf(p.first, p.second)) })) }
+        r.get(CaptureResult.STATISTICS_FACES)?.takeIf { it.isNotEmpty() }?.let { fs ->
+            o.put("faces", JSONArray(fs.map { f -> JSONObject().put("left", f.bounds.left).put("top", f.bounds.top).put("right", f.bounds.right).put("bottom", f.bounds.bottom).put("score", f.score) }))
+        }
         return o
     }
 }

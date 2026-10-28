@@ -159,3 +159,22 @@ fun recordingClock(seconds: Int): String {
 
 /** The orientation hint for a video file: the sensor's angle turned by the phone's tilt, as for a photo. */
 fun videoOrientation(sensorOrientation: Int, deviceDegrees: Int, frontFacing: Boolean): Int = jpegOrientation(sensorOrientation, deviceDegrees, frontFacing)
+
+
+/** A face the camera found: its box in the sensor's active-array coordinates (left, top, right, bottom) and the camera's confidence, 1 to 100. */
+class FaceBox(val left: Int, val top: Int, val right: Int, val bottom: Int, val score: Int) { val area: Int get() = (right - left) * (bottom - top) }
+
+/** The biggest face the camera is reasonably sure of, or null. */
+fun largestFace(faces: List<FaceBox>, minScore: Int = 60): FaceBox? = faces.filter { it.score >= minScore && it.area > 0 }.maxByOrNull { it.area }
+
+/** A face's box grown by [margin] each way (so the region covers the whole head's contrast, not only the skin) and kept inside the array. */
+fun faceRegion(face: FaceBox, arrayWidth: Int, arrayHeight: Int, margin: Float = 0.2f): IntArray {
+    val mx = ((face.right - face.left) * margin).toInt(); val my = ((face.bottom - face.top) * margin).toInt()
+    return intArrayOf((face.left - mx).coerceIn(0, arrayWidth - 1), (face.top - my).coerceIn(0, arrayHeight - 1), (face.right + mx).coerceIn(1, arrayWidth), (face.bottom + my).coerceIn(1, arrayHeight))
+}
+
+/** A box in active-array coordinates scaled to a RAW frame of [rawWidth] x [rawHeight] pixels, kept inside it. */
+fun scaleToRaw(box: IntArray, arrayWidth: Int, arrayHeight: Int, rawWidth: Int, rawHeight: Int): IntArray {
+    val sx = rawWidth.toFloat() / arrayWidth; val sy = rawHeight.toFloat() / arrayHeight
+    return intArrayOf((box[0] * sx).toInt().coerceIn(0, rawWidth - 1), (box[1] * sy).toInt().coerceIn(0, rawHeight - 1), (box[2] * sx).toInt().coerceIn(1, rawWidth), (box[3] * sy).toInt().coerceIn(1, rawHeight))
+}

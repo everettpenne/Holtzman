@@ -44,4 +44,29 @@ public object IxAutoTone {
         }
         return ys
     }
+
+    /**
+     * Keeps a face out of the shadows and out of the highlights without evening out skin tones. [faceLuma] is the face's mean brightness (0..1) before
+     * the curve. If the curve would put it below [floor] it is lifted to the floor, above [ceiling] it is eased down to the ceiling, and the change
+     * fades out around it so the rest of the picture is barely touched; a face already between the two is left exactly as the curve has it. (Pushing
+     * every face to one brightness would wash out dark skin: only the extremes are corrected.)
+     */
+    public fun protectFace(curve: FloatArray, faceLuma: Float, floor: Float = 0.27f, ceiling: Float = 0.72f, width: Float = 0.2f, minSlope: Float = 0.45f, maxSlope: Float = 2.0f): FloatArray {
+        val xs = IxLook.CURVE_X
+        fun at(x: Float): Float {
+            if (x <= 0f) return curve[0]
+            for (i in 1 until xs.size) if (x <= xs[i]) { val t = (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return curve[i - 1] + (curve[i] - curve[i - 1]) * t }
+            return curve.last()
+        }
+        val y = at(faceLuma)
+        val delta = if (y < floor) floor - y else if (y > ceiling) ceiling - y else return curve
+        val out = FloatArray(xs.size) { i -> val d = (xs[i] - faceLuma) / width; (curve[i] + delta * kotlin.math.exp(-d * d / 2f)).coerceIn(0f, 1f) }
+        out[0] = 0f
+        for (i in 1 until xs.size) {
+            val dx = xs[i] - xs[i - 1]
+            val ceilingY = 1f - minSlope * (1f - xs[i])
+            out[i] = out[i].coerceIn(out[i - 1] + minSlope * dx, minOf(out[i - 1] + maxSlope * dx, ceilingY))
+        }
+        return out
+    }
 }

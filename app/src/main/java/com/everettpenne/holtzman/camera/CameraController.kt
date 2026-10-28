@@ -80,10 +80,21 @@ class CameraController(private val context: Context) {
     /** What automatic exposure was doing in the latest preview frame: where a burst starts from. Null until a frame has been seen. */
     class AutoSample(val exposureNs: Long, val iso: Int, val focusDiopters: Float?, val afState: Int?)
     @Volatile var autoSample: AutoSample? = null; private set
+    /** The faces the camera found in its latest preview frame (empty when none, or when the camera cannot detect faces). */
+    @Volatile var latestFaces: List<FaceBox> = emptyList(); private set
+
+    /** The face detection mode to ask for: simple (boxes and scores) when the camera offers it. */
+    private fun faceDetectMode(): Int? {
+        val modes = characteristics?.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES) ?: return null
+        return CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE.takeIf { m -> modes.contains(m) }
+    }
+    private fun facesOf(result: TotalCaptureResult): List<FaceBox> =
+        result.get(CaptureResult.STATISTICS_FACES)?.map { FaceBox(it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom, it.score) } ?: emptyList()
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
             if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE))
+            latestFaces = facesOf(result)
         }
     }
 
@@ -200,6 +211,7 @@ class CameraController(private val context: Context) {
         if (extension == null) {
             b.set(CaptureRequest.CONTROL_AF_MODE, if (videoQuality != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            faceDetectMode()?.let { b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, it) }
             if (videoQuality != null) stabilise(b)
             val r = focusRegion
             if (r != null) {
@@ -240,7 +252,14 @@ class CameraController(private val context: Context) {
         val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
         val z = zoom
         val mapped = sensorPoint(u, v, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, z)
-        focusRegion = meteringBox(mapped, array.width(), array.height()).let { intArrayOf(it[0] + array.left, it[1] + array.top, it[2] + array.left, it[3] + array.top) }
+        lockOn(meteringBox(mapped, array.width(), array.height()).let { intArrayOf(it[0] + array.left, it[1] + array.top, it[2] + array.left, it[3] + array.top) })
+    }
+
+    /** Focus and meter on [region] (left, top, right, bottom in the sensor's coordinates) and trigger a scan; continuous focus resumes after 3.5 s. */
+    private fun lockOn(region: IntArray) {
+        val s = session ?: return
+        val device = device ?: return
+        focusRegion = region
         resend()
         handler.post {
             try {
@@ -269,7 +288,14 @@ class CameraController(private val context: Context) {
         val started = android.os.SystemClock.uptimeMillis()
         // Autofocus over the whole frame prefers the far scene (more contrast to lock onto): a fresh scan still focused on the factory behind a desk of near
         // objects. So the scan is aimed at the centre of the frame, the way a tap on it would be, unless the user has chosen a spot.
-        focusAt(0.5f, 0.5f)
+        val array = characteristics?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val face = largestFace(latestFaces)
+        if (face != null && array != null) {
+            // a face is what the picture is about: focus and meter on it, not on the middle of the frame
+            val r = faceRegion(face, array.width(), array.height(), 0.1f)
+            Log.i(TAG, "shutter focus on a face (score ${face.score}, ${face.right - face.left} px wide)")
+            lockOn(intArrayOf(r[0] + array.left, r[1] + array.top, r[2] + array.left, r[3] + array.top))
+        } else focusAt(0.5f, 0.5f)
         handler.post {
             fun poll() {
                 val waited = android.os.SystemClock.uptimeMillis() - started
@@ -484,6 +510,7 @@ class CameraController(private val context: Context) {
                 set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
                 set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
                 set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+                faceDetectMode()?.let { set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, it) }
             }
             val requests = List(n) { builder.build() }
             val images = ArrayList<java.nio.ByteBuffer>(n); val results = ArrayList<TotalCaptureResult>(n); val dims = intArrayOf(0, 0)

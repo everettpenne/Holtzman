@@ -55,7 +55,8 @@ class BurstProcessor(private val saver: PhotoSaver) {
             val refRaw = ShortArray(merged.width * merged.height).also { frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) }
             val exposure = com.everettpenne.ix.IxRender.autoExposure(refRaw, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
             val tRender = System.nanoTime()
-            val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure)
+            val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
+            val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
             val mergedJpeg = saver.writeJpeg("${base}_burst.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
             val refJpeg = saver.writeJpeg("${base}_ref.jpg", timeMillis, refBitmap, 95, orientation); refBitmap.recycle()
             Log.i("HoltzmanBurst", "rendered two pictures in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")
@@ -90,19 +91,29 @@ class BurstProcessor(private val saver: PhotoSaver) {
         return IxMerged(smooth, merged.width, merged.height, merged.meanFrames)
     }
 
+    /** The largest confident face the reference frame's own metadata reports, as a box in RAW pixel coordinates (null when there is none). */
+    private fun faceInRaw(result: android.hardware.camera2.TotalCaptureResult, chars: CameraCharacteristics, rawW: Int, rawH: Int): IntArray? {
+        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val faces = result.get(CaptureResult.STATISTICS_FACES)?.map { com.everettpenne.holtzman.camera.FaceBox(it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom, it.score) } ?: return null
+        val face = com.everettpenne.holtzman.camera.largestFace(faces) ?: return null
+        val region = com.everettpenne.holtzman.camera.faceRegion(face, array.width(), array.height(), 0f)
+        Log.i("HoltzmanBurst", "face found: score ${face.score}, ${face.right - face.left} px wide in the active array")
+        return com.everettpenne.holtzman.camera.scaleToRaw(region, array.width(), array.height(), rawW, rawH)
+    }
+
     private companion object { const val VERIFY_GPU = false; /** Tolerance of the spatial denoise of the merged mosaic, in noise deviations. */ const val RAW_DENOISE = 1.6f }
 
     /**
      * Renders the merged and reference mosaics on the GPU, and checks the first against the CPU renderer on one band of rows (the log says how far
      * apart they are); if the GPU cannot do it on this device, both come from the CPU renderer.
      */
-    private fun renderBoth(gl: GlContext?, merged: ShortArray, ref: ShortArray, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float): Pair<android.graphics.Bitmap, android.graphics.Bitmap> {
+    private fun renderBoth(gl: GlContext?, merged: ShortArray, ref: ShortArray, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float, face: IntArray?): Pair<android.graphics.Bitmap, android.graphics.Bitmap> {
         try {
             GpuRender(gl ?: error("no GPU context"), ownsContext = false).use { gpu ->
                 val t0 = System.nanoTime()
-                val a = gpu.toBitmap(merged, w, h, s, exposure)
+                val a = gpu.toBitmap(merged, w, h, s, exposure, face)
                 val t1 = System.nanoTime()
-                val b = gpu.toBitmap(ref, w, h, s, exposure)
+                val b = gpu.toBitmap(ref, w, h, s, exposure, face)
                 Log.i("HoltzmanBurst", "GPU render: merged ${(t1 - t0) / 1_000_000} ms, reference ${(System.nanoTime() - t1) / 1_000_000} ms")
                 if (VERIFY_GPU) {
                     // check one band against the CPU renderer: rounding may differ by a level, anything more is a bug

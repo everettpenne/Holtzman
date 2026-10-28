@@ -210,3 +210,12 @@ Same-scene comparison on the phone (factory desk, Google camera app against Holt
 | mean saturation | 95 | 92 | 113 (then lowered the finish's saturation from 1.15 to 1.08) |
 
 Two scenes is a thin basis for the targets: the 75th percentile, for example, differs between them (127 and 165) and is deliberately not anchored. More Google-app pairs would tighten them. The local tone mapping, grain and adaptive curve exist only on the GPU path; the CPU fallback renderer applies the fixed look without them.
+
+## Faces (2026-10-28)
+
+The camera reports faces (`STATISTICS_FACES`; the 10a offers off, simple and full modes), asked for in the preview and in every burst request.
+
+- **Focus and metering:** when the shutter is pressed and a face with score 60 or more is in view, the focus scan and the metering go to the largest face (its box grown by 10%) instead of the middle of the frame; with no face the scan is aimed at the middle, as before; a tap on the screen still wins.
+- **Tone:** the face's own brightness (every pixel in its box in the toned picture, before the adaptive curve) is measured, and if the curve would put it below 0.27 or above 0.72 of white the curve is bent there, fading out around it, to bring it to those limits. A face already between them is left exactly as the curve has it: skin tones are not evened out, because pushing every face to one brightness washes out dark skin. A very dark face can only be lifted as far as the curve's slope limit allows (it cannot be steeper than 2), so one under about 0.13 reaches the floor only partly.
+- **Dataset:** each frame's face boxes are saved in `meta.json`.
+- **Tested:** the choice of face, box growth and scaling, and the curve adjustment, with unit tests; a burst without a face on the phone (no change, 2.1 s). **Not yet tested with a real face in view**, so the focus-on-face path and the log lines `face found` and `face brightness ... curve ...` have not been seen.

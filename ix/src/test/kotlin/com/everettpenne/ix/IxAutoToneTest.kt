@@ -36,4 +36,24 @@ class IxAutoToneTest {
         val c = IxAutoTone.curve(histogramOf { it % 256 }, strength = 0f, minSlope = 0f, maxSlope = 10f)
         for (i in c.indices) assertEquals(IxLook.CURVE_X[i], c[i], 1e-4f)
     }
+
+    @Test fun aFaceLeftInTheShadowsIsLiftedToTheFloor() {
+        val base = IxLook.CURVE_X.copyOf()   // identity
+        // 0.15 is as dark as a face can be and still reach the floor (0.27) within the curve's slope limit of 2
+        val c = IxAutoTone.protectFace(base, faceLuma = 0.15f)
+        assertTrue("face at ${at(c, (0.15f * 255).toInt())}", at(c, (0.15f * 255).toInt()) >= 0.27f * 255f - 6f)
+        assertTrue("far highlights barely move: ${at(c, 230)}", Math.abs(at(c, 230) - 230f) < 12f)
+    }
+
+    @Test fun aFaceAlreadyInRangeLeavesTheCurveAlone() {
+        val base = IxAutoTone.curve(histogramOf { 20 + it % 200 })
+        val c = IxAutoTone.protectFace(base, faceLuma = 0.45f)
+        for (i in base.indices) assertEquals(base[i], c[i], 1e-6f)
+    }
+
+    @Test fun aBlownFaceIsEasedDownAndTheCurveStaysMonotone() {
+        val c = IxAutoTone.protectFace(IxLook.CURVE_X.copyOf(), faceLuma = 0.92f)
+        assertTrue("face at ${at(c, 235)}", at(c, 235) <= 0.72f * 255f + 8f)
+        for (i in 1 until c.size) assertTrue("knot $i", c[i] > c[i - 1])
+    }
 }

@@ -49,7 +49,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "local tone mapping unavailable, toning globally: $t") }
         try {
             lumaHistProgram = gl.program(LUMA_HISTOGRAM_SHADER); curveProgram = gl.program(CURVE_SHADER)
-            gl.loc(lumaHistProgram, "size"); gl.loc(curveProgram, "size"); gl.loc(curveProgram, "curveY[0]")
+            gl.loc(lumaHistProgram, "size"); gl.loc(lumaHistProgram, "region"); gl.loc(lumaHistProgram, "step"); gl.loc(curveProgram, "size"); gl.loc(curveProgram, "curveY[0]")
             autoToneAvailable = true
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "adaptive tone unavailable, using the fixed curve: $t") }
     }
@@ -60,7 +60,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     /** Time since the last mark, once the GPU has finished what was queued (only when [PROFILE] is on: it stalls the pipeline). */
     private fun mark(name: String) { if (!PROFILE) return; GLES31.glFinish(); val t = System.nanoTime(); laps.append(" $name ${(t - lap) / 1_000_000}"); lap = t }
 
-    fun toBitmap(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, exposure: Float): Bitmap {
+    fun toBitmap(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, exposure: Float, face: IntArray? = null): Bitmap {
         laps.setLength(0); lap = System.nanoTime()
         require(raw.size >= width * height && width % 2 == 0) { "need a tight mosaic with an even width" }
         val pixels = width * height
@@ -153,12 +153,36 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, histBuffer[0])
                     GLES31.glUseProgram(lumaHistProgram)
                     gl.setInts(lumaHistProgram, "size", width, height)
+                    gl.setInts(lumaHistProgram, "region", 0, 0, width, height); gl.setInts(lumaHistProgram, "step", 2)
                     GLES31.glDispatchCompute((width / 2 + 15) / 16, (height / 2 + 15) / 16, 1)
                     GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
                     val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
                     val hist = IntArray(256).also { counts.get(it) }
                     GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
-                    val curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone)
+                    var curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone)
+                    if (face != null && face[2] - face[0] >= 16 && face[3] - face[1] >= 16) {
+                        // a face: measure its own brightness (every pixel in its box) and keep it out of the shadows and highlights
+                        val faceHist = IntArray(1); GLES31.glGenBuffers(1, faceHist, 0)
+                        try {
+                            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, faceHist[0])
+                            GLES31.glBufferData(GLES31.GL_SHADER_STORAGE_BUFFER, 256 * 4, ByteBuffer.allocateDirect(256 * 4).order(ByteOrder.nativeOrder()), GLES31.GL_DYNAMIC_COPY)
+                            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, faceHist[0])
+                            GLES31.glUseProgram(lumaHistProgram)
+                            gl.setInts(lumaHistProgram, "region", face[0], face[1], face[2], face[3]); gl.setInts(lumaHistProgram, "step", 1)
+                            GLES31.glDispatchCompute(((face[2] - face[0]) + 15) / 16, ((face[3] - face[1]) + 15) / 16, 1)
+                            GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                            val fc = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
+                            val fh = IntArray(256).also { fc.get(it) }
+                            GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+                            var n = 0L; var sum = 0L; for (i in 0 until 256) { n += fh[i]; sum += fh[i].toLong() * i }
+                            if (n > 100) {
+                                val faceLuma = sum.toFloat() / n / 255f
+                                val before = curve
+                                curve = com.everettpenne.ix.IxAutoTone.protectFace(curve, faceLuma)
+                                android.util.Log.i("HoltzmanGpu", "face brightness before the curve %.2f; curve %s".format(java.util.Locale.ROOT, faceLuma, if (curve.contentEquals(before)) "left alone" else "adjusted to protect it"))
+                            }
+                        } finally { GLES31.glDeleteBuffers(1, faceHist, 0) }
+                    }
                     android.util.Log.i("HoltzmanGpu", "adaptive tone curve: " + curve.joinToString(" ") { "%.0f".format(java.util.Locale.ROOT, it * 255f) })
                     GLES31.glUseProgram(curveProgram)
                     gl.setInts(curveProgram, "size", width, height)
@@ -332,10 +356,10 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(local_size_x = 16, local_size_y = 16) in;
             layout(std430, binding = 3) readonly buffer In { uint src[]; };
             layout(std430, binding = 7) buffer Hist { uint hist[]; };
-            uniform ivec2 size;
+            uniform ivec2 size; uniform ivec4 region; uniform int step;
             void main() {
-                ivec2 g = ivec2(gl_GlobalInvocationID.xy) * 2;
-                if (g.x >= size.x || g.y >= size.y) return;
+                ivec2 g = region.xy + ivec2(gl_GlobalInvocationID.xy) * step;
+                if (g.x >= region.z || g.y >= region.w || g.x >= size.x || g.y >= size.y) return;
                 uint v = src[g.y * size.x + g.x];
                 float l = dot(vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)), vec3(0.2126, 0.7152, 0.0722));
                 atomicAdd(hist[min(int(l + 0.5), 255)], 1u);

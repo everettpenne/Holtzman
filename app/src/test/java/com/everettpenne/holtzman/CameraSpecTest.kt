@@ -96,4 +96,22 @@ class CameraSpecTest {
         assertEquals("0:00", recordingClock(0)); assertEquals("0:09", recordingClock(9)); assertEquals("1:05", recordingClock(65)); assertEquals("1:00:00", recordingClock(3600)); assertEquals("0:00", recordingClock(-3))
         assertEquals(90, videoOrientation(90, 0, false)); assertEquals(0, videoOrientation(90, 270, false))
     }
+
+    @Test fun theLargestConfidentFaceIsChosen() {
+        val small = FaceBox(10, 10, 60, 60, 90); val big = FaceBox(100, 100, 300, 300, 80); val unsure = FaceBox(0, 0, 500, 500, 30)
+        assertEquals(big, largestFace(listOf(small, big, unsure)))
+        assertEquals(null, largestFace(listOf(unsure)))
+    }
+
+    @Test fun aFaceRegionGrowsAndStaysInsideTheArray() {
+        val r = faceRegion(FaceBox(10, 10, 110, 110, 90), 1000, 800)
+        assertEquals(0, r[0]); assertEquals(0, r[1]); assertEquals(130, r[2]); assertEquals(130, r[3])
+        val edge = faceRegion(FaceBox(900, 700, 1000, 800, 90), 1000, 800)
+        assertEquals(1000, edge[2]); assertEquals(800, edge[3])
+    }
+
+    @Test fun aBoxScalesToTheRawFrame() {
+        val r = scaleToRaw(intArrayOf(0, 0, 4080, 3072), 4080, 3072, 4000, 3000)
+        assertEquals(4000, r[2]); assertEquals(3000, r[3])
+    }
 }
