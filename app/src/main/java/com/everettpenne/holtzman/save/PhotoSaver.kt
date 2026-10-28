@@ -44,6 +44,9 @@ class PhotoSaver(private val resolver: ContentResolver) {
         return Saved(jpeg, dng)
     }
 
+    /** A DNG written by [body] to Pictures/Holtzman, pending until complete and removed on failure, like every other file. */
+    fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body)
+
     private fun write(name: String, mime: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -71,6 +74,15 @@ class PhotoSaver(private val resolver: ContentResolver) {
                 exif.setAttribute(ExifInterface.TAG_ORIENTATION, exifOrientationFor(degrees).toString())
                 exif.saveAttributes()
             }
+        }
+    }
+
+    companion object {
+        fun exifOrientation(degrees: Int): Int = when (degrees) {
+            90 -> ExifInterface.ORIENTATION_ROTATE_90
+            180 -> ExifInterface.ORIENTATION_ROTATE_180
+            270 -> ExifInterface.ORIENTATION_ROTATE_270
+            else -> ExifInterface.ORIENTATION_NORMAL
         }
     }
 

@@ -30,6 +30,12 @@ class StillResult(
     val needsExifOrientation: Boolean = false,
 )
 
+/**
+ * One frame of a burst, copied out of the camera's buffer at once (so the camera is not kept waiting for buffers: it holds only a handful, fewer than
+ * a burst has frames). The pixels are tight rows of 16-bit samples in a direct (off-heap) buffer; [result] has the exposure, gains and shading map.
+ */
+class BurstFrame(val pixels: java.nio.ByteBuffer, val width: Int, val height: Int, val result: TotalCaptureResult)
+
 /** One RAW frame and the metadata DngCreator needs to describe it. Call [close] when done: it owns the camera's buffer. */
 class RawCapture(val image: Image, val result: TotalCaptureResult) { fun close() = image.close() }
 
@@ -42,7 +48,7 @@ enum class Lens { BACK, FRONT }
  * The still stream is the largest 4:3 JPEG the camera offers. Preview and still share the shape, so the frame on screen is the frame saved.
  */
 class CameraController(private val context: Context) {
-    private companion object { const val TAG = "HoltzmanCamera" }
+    companion object { const val TAG = "HoltzmanCamera"; const val BURST_FRAMES = 6 }
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("holtzman-camera").also { it.start() }
@@ -70,6 +76,16 @@ class CameraController(private val context: Context) {
     private var repeatingTemplate: CaptureRequest.Builder? = null
     private val afReset = Runnable { clearFocus() }
     @Volatile private var precapturing = false
+
+    /** What automatic exposure was doing in the latest preview frame: where a burst starts from. Null until a frame has been seen. */
+    class AutoSample(val exposureNs: Long, val iso: Int)
+    @Volatile var autoSample: AutoSample? = null; private set
+    private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
+            if (e != null && i != null) autoSample = AutoSample(e, i)
+        }
+    }
 
     /** Set when the camera was opened for video: the size recorded. */
     var videoQuality: VideoQuality? = null; private set
@@ -128,7 +144,7 @@ class CameraController(private val context: Context) {
      * once frames are flowing; [onError] says what went wrong.
      */
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
-    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, onReady: () -> Unit, onError: (String) -> Unit) {
+    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
         val gen = ++generation
         val id = idFor(lens) ?: return onError("This phone has no ${lens.name.lowercase()} camera.")
@@ -147,7 +163,7 @@ class CameraController(private val context: Context) {
         flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension; videoQuality = video
         jpegReader = still?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.JPEG, 3) }
-        rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 3) }
+        rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, if (burst) BURST_FRAMES + 1 else 3) }
 
         manager.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -169,7 +185,7 @@ class CameraController(private val context: Context) {
                 try {
                     repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }
                     val request = previewRequest()
-                    s.setRepeatingRequest(request, null, handler)
+                    s.setRepeatingRequest(request, previewCallback, handler)
                     onReady()
                 } catch (e: Exception) { onError("The preview would not start: ${e.message}") }
             }
@@ -198,7 +214,7 @@ class CameraController(private val context: Context) {
         if (repeatingTemplate == null) return
         handler.post {
             try {
-                session?.setRepeatingRequest(previewRequest(), null, handler)
+                session?.setRepeatingRequest(previewRequest(), previewCallback, handler)
                 extensionSession?.setRepeatingRequest(previewRequest(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
             } catch (e: Exception) { Log.w(TAG, "could not update the preview", e) }
         }
@@ -406,6 +422,59 @@ class CameraController(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "capture failed", e); onError("The shot failed: ${e.message}")
         }
+    }
+
+    /**
+     * Takes [BURST_FRAMES] RAW frames back to back at the exposure and ISO automatic exposure had just chosen, held fixed so every frame matches
+     * (a merge needs equal frames). Each frame comes with its result (exposure, gains, lens-shading map, black levels). [onResult] gets the frames and
+     * their results in order, on the camera thread; the caller owns the images and must close them all.
+     */
+    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit) {
+        val camera = device ?: return onError("The camera is not open.")
+        val s = session ?: return onError("The camera is not ready.")
+        val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
+        val auto = autoSample ?: return onError("Wait a moment for the exposure to settle.")
+        val n = BURST_FRAMES
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(raws.surface)
+                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                set(CaptureRequest.SENSOR_EXPOSURE_TIME, auto.exposureNs); set(CaptureRequest.SENSOR_SENSITIVITY, auto.iso)
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)   // focus stays where continuous AF last settled
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
+                // no HAL noise reduction, sharpening or tone curve on a frame that will be merged: the merge is the noise reduction
+                set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
+                set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+                set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+            }
+            val requests = List(n) { builder.build() }
+            val images = ArrayList<java.nio.ByteBuffer>(n); val results = ArrayList<TotalCaptureResult>(n); val dims = intArrayOf(0, 0)
+            var delivered = false
+            fun check() {
+                if (delivered || images.size < n || results.size < n) return
+                delivered = true
+                onResult(List(n) { BurstFrame(images[it], dims[0], dims[1], results[it]) })
+            }
+            raws.setOnImageAvailableListener({ r ->
+                r.acquireNextImage()?.let { img ->
+                    // copy the rows out (dropping the stride padding) and hand the camera its buffer back straight away
+                    val plane = img.planes[0]
+                    val w = img.width; val h = img.height
+                    val tight = java.nio.ByteBuffer.allocateDirect(w * h * 2).order(java.nio.ByteOrder.nativeOrder())
+                    val src = plane.buffer
+                    for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src); src.clear() }
+                    tight.rewind()
+                    img.close()
+                    synchronized(images) { dims[0] = w; dims[1] = h; images += tight; check() }
+                }
+            }, handler)
+            s.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) { synchronized(images) { results += result; check() } }
+                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
+                    synchronized(images) { if (!delivered) { delivered = true; images.clear(); onError("A burst frame failed (reason ${failure.reason}).") } }
+                }
+            }, handler)
+        } catch (e: Exception) { Log.w(TAG, "burst failed", e); onError("The burst failed: ${e.message}") }
     }
 
     fun close() {

@@ -23,8 +23,8 @@ Target: Google Pixel 10a (Tensor G4, `zumapro`, 7.3 GB RAM, Android 17, Graphene
 | # | Stage | Where it runs | Status |
 |---|---|---|---|
 | 0 | Camera2 capture, RAW + JPEG, Night extension, Ultra HDR from one RAW | CPU | **done** |
-| 1 | **Burst capture:** N equal short-exposure RAW frames, per-frame metadata (exposure, ISO, gains, lens-shading, black/white level), saved to a work buffer | Camera2 | in progress |
-| 2 | **Align + merge (classical):** tile-based alignment on a coarse pyramid, robust merge in the RAW domain, in `:ix` (JVM-testable) | CPU, then GPU | next |
+| 1 | **Burst capture:** 6 equal RAW frames at the exposure auto had chosen, NR/edge off, per-frame results (exposure, gains, lens-shading, black level); each frame is copied off-heap at once because the camera lends only a few buffers | Camera2 | **done** (tested on the 10a) |
+| 2 | **Align + merge (classical):** three-level tile alignment in whole 2x2 cells, then a noise-aware weighted mean in the RAW domain, in `:ix` (JVM-tested). Output: a merged DNG next to the unmerged reference DNG. **1.4 s on the 10a for 6 frames** (needs a non-debuggable build: a debuggable one ran 90x slower) | CPU | **first version done**; measured noise reduction on textured real patches 1.0x-1.8x (ideal 2.4x); needs a flat chart and a calibrated noise model |
 | 3 | **Render:** black level, white balance, colour matrix, demosaic (classical), tone map, JPEG / Ultra HDR / DNG out | CPU/GPU | next |
 | 4 | **Accelerator spike:** LiteRT with the GPU delegate and any NPU path: which ops run where, latency on a small model | Tensor G4 | in progress |
 | 5 | **Learned tone mapping:** small network predicting a bilateral grid, sliced at full resolution (cheap, high value) | GPU/NPU | after 3 |

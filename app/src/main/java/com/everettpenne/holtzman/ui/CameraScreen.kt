@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.CaptureContract
 import com.everettpenne.holtzman.camera.*
+import com.everettpenne.holtzman.save.BurstProcessor
 import com.everettpenne.holtzman.save.PhotoSaver
 import com.everettpenne.holtzman.save.UltraHdr
 import com.everettpenne.holtzman.save.VideoSaver
@@ -88,6 +89,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
     var hdr by remember { mutableStateOf(false) }
+    var burst by remember { mutableStateOf(false) }
     var videoMode by remember { mutableStateOf(startInVideo) }
     var recording by remember { mutableStateOf(false) }
     var elapsed by remember { mutableIntStateOf(0) }
@@ -135,7 +137,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, hdr, resumed, previewShape, nightExtension, videoMode, quality) {
+    LaunchedEffect(surfaceReady, lens, raw, hdr, burst, resumed, previewShape, nightExtension, videoMode, quality) {
         if (surfaceReady == null || !resumed) { controller.close(); return@LaunchedEffect }
         previewShape?.let { shape ->
             val holder = surfaceReady ?: return@let
@@ -146,7 +148,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             }
         }
         val surface = surfaceReady?.surface ?: run { controller.close(); return@LaunchedEffect }
-        controller.open(lens, surface, raw || hdr, if (videoMode) null else nightExtension, if (videoMode) quality else null, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw || hdr || burst, if (videoMode) null else nightExtension, if (videoMode) quality else null, burst, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -162,8 +164,26 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
     LaunchedEffect(status) { if (status != null) { delay(3500); status = null } }
 
+    fun shootBurst() {
+        if (busy) return
+        busy = true; status = "Hold still…"
+        val chars = controller.characteristics
+        val processor = BurstProcessor(saver)
+        val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
+        controller.captureBurst(onResult = { frames ->
+            scope.launch(Dispatchers.Default) {
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis()) }
+                withContext(Dispatchers.Main) {
+                    busy = false
+                    outcome.onSuccess { status = "Merged ${it.frames} frames in %.1f s".format(java.util.Locale.ROOT, it.millis / 1000f) }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
+                }
+            }
+        }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
+    }
+
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
+        if (burst) { shootBurst(); return }
         busy = true
         if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
@@ -244,9 +264,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             Pill(Icons.Rounded.Analytics, "Camera probe") { showProbe = true }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false } }
-                if (!videoMode && !night) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
-                if (!videoMode && !night && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
+                if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
+                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; raw = false } }
+                if (!videoMode && !night && !burst) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
+                if (!videoMode && !night && !burst && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }
         // flash (when the lens has one and the pipeline can use it), the timer, and the grid: a second row, over the top of the picture

@@ -37,7 +37,7 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        getByName("debug") { applicationIdSuffix = ".next" }
+        getByName("debug") { applicationIdSuffix = ".next"; isDebuggable = false }
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
