@@ -89,7 +89,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var raw by remember { mutableStateOf(false) }
     var rawAvailable by remember { mutableStateOf(false) }
     var night by remember { mutableStateOf(false) }
-    var hdr by remember { mutableStateOf(false) }
+    var hdr by remember { mutableStateOf(true) }
     // the computational burst is the normal way to take a photo; the chip turns it off for a quick single frame
     var burst by remember { mutableStateOf(true) }
     var dataset by remember { mutableStateOf(false) }
@@ -180,7 +180,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         controller.focusForShot { controller.captureBurst(onResult = { frames ->
             scope.launch(Dispatchers.Default) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis(), saveDng = raw, saveReference = compare) }
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, System.currentTimeMillis(), saveDng = raw, saveReference = compare, ultraHdr = hdr) }
                 withContext(Dispatchers.Main) {
                     busy = false
                     outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
@@ -311,9 +311,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!videoMode && nightAvailable) Chip("NIGHT", night, enabled = true) { night = !night; if (night) { raw = false; hdr = false; burst = false } }
-                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) { hdr = false; dataset = false } }
+                if (!videoMode && !night) Chip("BURST", burst, enabled = true) { burst = !burst; if (burst) dataset = false }
                 if (!videoMode && !night) Chip("DATA", dataset, enabled = true) { dataset = !dataset; if (dataset) { hdr = false; raw = false; burst = false; showDataset = true } }
-                if (!videoMode && !night && !burst && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
+                if (!videoMode && !night && !dataset) Chip("HDR", hdr, enabled = true) { hdr = !hdr }
                 if (!videoMode && !night && !dataset && (rawAvailable || !raw)) Chip("RAW", raw, enabled = true) { raw = !raw; if (!raw) rawAvailable = false }
             }
         }

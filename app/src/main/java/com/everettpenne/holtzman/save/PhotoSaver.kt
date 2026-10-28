@@ -54,6 +54,11 @@ class PhotoSaver(private val resolver: ContentResolver) {
         }
     }
 
+    /** Whether the saved picture at [uri] really carries an Ultra HDR gain map (decoded small, which keeps it). */
+    fun hasGainmap(uri: Uri): Boolean = runCatching {
+        resolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 })?.hasGainmap() } ?: false
+    }.getOrDefault(false)
+
     /** A DNG written by [body] to Pictures/Holtzman, pending until complete and removed on failure, like every other file. */
     fun writeDng(name: String, timeMillis: Long, body: (java.io.OutputStream) -> Unit): Uri = write(name, "image/x-adobe-dng", timeMillis, body = body)
 

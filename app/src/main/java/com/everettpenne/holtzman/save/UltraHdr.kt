@@ -46,7 +46,11 @@ object UltraHdr {
         val width = image.width; val height = image.height
         val samples = ShortArray(rowStride * height)
         plane.buffer.asShortBuffer().let { it.get(samples, 0, minOf(it.remaining(), samples.size)) }
+        return blocksOf(samples, width, height, rowStride, result, chars)
+    }
 
+    /** The scene's linear brightness on the gain map's grid, from a RAW mosaic and the metadata of the frame it came from. */
+    private fun blocksOf(samples: ShortArray, width: Int, height: Int, rowStride: Int, result: android.hardware.camera2.TotalCaptureResult, chars: CameraCharacteristics): IxBlocks? {
         val cfa = when (chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)) {
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB -> IxCfa.RGGB
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG -> IxCfa.GRBG
@@ -108,4 +112,33 @@ object UltraHdr {
         val check = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         return if (check != null && check.hasGainmap()) bytes else { Log.w(TAG, "the encoder did not keep the gain map"); null }
     }
+
+    /**
+     * Ultra HDR for a burst: the merged mosaic is the scene's linear light, [sdr] the finished (tone-mapped) picture rendered from it, in the same
+     * orientation. Attaches the gain map to [sdr] so that compressing it as a JPEG writes an Ultra HDR file. Returns whether it did; false (and
+     * [sdr] untouched) when there is nothing in the highlights worth recovering, or on any failure, so the caller saves a plain JPEG.
+     */
+    fun attachGainmap(sdr: Bitmap, mosaic: ShortArray, width: Int, height: Int, result: android.hardware.camera2.TotalCaptureResult, chars: CameraCharacteristics): Boolean = try {
+        val blocks = blocksOf(mosaic, width, height, width, result, chars)
+        if (blocks == null) false else {
+            // the picture on the gain map's grid, shrunk in halvings (each halving averages; one big step would skip most pixels)
+            var small = sdr
+            while (small.width / 2 >= blocks.width && small.height / 2 >= blocks.height) small = Bitmap.createScaledBitmap(small, small.width / 2, small.height / 2, true)
+            val grid = if (small.width == blocks.width && small.height == blocks.height) small else Bitmap.createScaledBitmap(small, blocks.width, blocks.height, true)
+            val px = IntArray(blocks.width * blocks.height).also { grid.getPixels(it, 0, blocks.width, 0, 0, blocks.width, blocks.height) }
+            val lut = FloatArray(256) { i -> val c = i / 255.0; (if (c <= 0.04045) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)).toFloat() }
+            val lum = FloatArray(px.size) { i -> val p = px[i]; 0.2126f * lut[(p shr 16) and 0xFF] + 0.7152f * lut[(p shr 8) and 0xFF] + 0.0722f * lut[p and 0xFF] }
+            val gain = IxGainMap.compute(lum, blocks, MAX_BOOST)
+            if (gain == null) { Log.i(TAG, "no highlight detail to recover in this burst"); false } else {
+                val map = Bitmap.createBitmap(gain.width, gain.height, Bitmap.Config.ALPHA_8)
+                map.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(gain.data))
+                sdr.setGainmap(Gainmap(map).apply {
+                    setRatioMin(1f, 1f, 1f); setRatioMax(gain.maxBoost, gain.maxBoost, gain.maxBoost); setGamma(1f, 1f, 1f)
+                    setEpsilonSdr(1f / 64f, 1f / 64f, 1f / 64f); setEpsilonHdr(1f / 64f, 1f / 64f, 1f / 64f)
+                    minDisplayRatioForHdrTransition = 1f; displayRatioForFullHdr = gain.maxBoost
+                })
+                true
+            }
+        }
+    } catch (t: Throwable) { Log.w(TAG, "Ultra HDR for the burst failed; saving the plain JPEG", t); false }
 }
