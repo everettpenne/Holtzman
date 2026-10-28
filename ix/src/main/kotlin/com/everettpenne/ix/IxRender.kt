@@ -56,6 +56,12 @@ public class IxLook(
     public val detailCore: Float = 0.5f,
     public val clarity: Float = 0f,
     public val chromaSmoothing: Float = 0.85f,
+    /** Local tone mapping (GPU only), 0 = off, 1 = full: shadows are lifted and highlights eased by the brightness of the neighbourhood, not the pixel alone. */
+    public val localTone: Float = 0f,
+    /** Film grain added at the very end, in display levels of 255 at its strongest (0 = none); it hides the plastic look heavy denoising leaves. */
+    public val grain: Float = 0f,
+    /** Adaptive tone (GPU only), 0 = off: the tone curve is chosen per picture from its own brightness distribution, see [IxAutoTone]. Replaces [curve]. */
+    public val autoTone: Float = 0f,
 ) {
     init { require(curve == null || curve.size == CURVE_X.size) { "the curve needs ${CURVE_X.size} points" } }
 

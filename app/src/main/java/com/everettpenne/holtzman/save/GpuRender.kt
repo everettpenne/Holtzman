@@ -21,6 +21,14 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     private var lumaProgram = 0
     private var finishProgram = 0
     private var histogramProgram = 0
+    private var gridProgram = 0
+    private var smoothProgram = 0
+    private var lumaHistProgram = 0
+    private var curveProgram = 0
+    /** False when the adaptive tone shaders did not build here: the fixed curve is used. */
+    var autoToneAvailable = false; private set
+    /** False when the local tone mapping shaders did not build here: the picture is then toned globally. */
+    var localToneAvailable = false; private set
     /** False when the noise-aware finish could not be built on this device: the plain sharpen pass is used instead. */
     var noiseAwareFinish = false; private set
 
@@ -29,10 +37,21 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         // the noise-aware finish is newer: if its shaders do not build here the render still works, with the plain sharpen pass
         try {
             lumaProgram = gl.program(LUMA3_SHADER); finishProgram = gl.program(FINISH_SHADER); histogramProgram = gl.program(NOISE_HISTOGRAM_SHADER)
-            for (u in listOf("size", "sigmas", "denoise", "detail", "core", "clarity", "chromaMix")) gl.loc(finishProgram, u)
+            for (u in listOf("size", "sigmas", "denoise", "detail", "core", "clarity", "chromaMix", "grain")) gl.loc(finishProgram, u)
             gl.loc(lumaProgram, "size"); gl.loc(histogramProgram, "size")
             noiseAwareFinish = true
         } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "noise-aware finish unavailable, using the plain sharpen pass: $t") }
+        try {
+            gridProgram = gl.program(GRID_SHADER); smoothProgram = gl.program(SMOOTH_SHADER)
+            for (u in listOf("size", "redAt", "wb", "exposure")) gl.loc(gridProgram, u)
+            gl.loc(smoothProgram, "gridSize")
+            localToneAvailable = true
+        } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "local tone mapping unavailable, toning globally: $t") }
+        try {
+            lumaHistProgram = gl.program(LUMA_HISTOGRAM_SHADER); curveProgram = gl.program(CURVE_SHADER)
+            gl.loc(lumaHistProgram, "size"); gl.loc(curveProgram, "size"); gl.loc(curveProgram, "curveY[0]")
+            autoToneAvailable = true
+        } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "adaptive tone unavailable, using the fixed curve: $t") }
     }
 
     /** Renders the whole mosaic [raw] (a [width] x [height] ARGB bitmap comes back), with the same inputs as the CPU renderer. */
@@ -45,8 +64,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
         laps.setLength(0); lap = System.nanoTime()
         require(raw.size >= width * height && width % 2 == 0) { "need a tight mosaic with an even width" }
         val pixels = width * height
-        val buffers = IntArray(7)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma, green plane
-        GLES31.glGenBuffers(7, buffers, 0)
+        val buffers = IntArray(9)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma, green plane, spare, tone-map grid, tone-map base
+        GLES31.glGenBuffers(9, buffers, 0)
         try {
             val rawBytes = ByteBuffer.allocateDirect(pixels * 2).order(ByteOrder.nativeOrder()).also { it.asShortBuffer().put(raw, 0, pixels); it.rewind() }
             upload(buffers[0], rawBytes, pixels * 2)
@@ -67,6 +86,9 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 4, buffers[4])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 5, buffers[5])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 6, buffers[6])
+            val gridW = (width + 15) / 16; val gridH = (height + 15) / 16
+            val useLtm = s.look.localTone > 0f && localToneAvailable
+            if (useLtm) { allocate(buffers[7], gridW * gridH * 4); allocate(buffers[8], gridW * gridH * 4); GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 8, buffers[7]); GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 9, buffers[8]) }
             val gx = (width + 15) / 16; val gy = (height + 15) / 16
 
             GLES31.glUseProgram(linearProgram)
@@ -88,7 +110,24 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
             mark("green")
 
+            if (useLtm) {
+                GLES31.glUseProgram(gridProgram)
+                gl.setInts(gridProgram, "size", width, height); gl.setInts(gridProgram, "redAt", s.cfa.redX, s.cfa.redY)
+                GLES31.glUniform3f(gl.loc(gridProgram, "wb"), s.wb[0], s.wb[1], s.wb[2]); GLES31.glUniform1f(gl.loc(gridProgram, "exposure"), exposure)
+                GLES31.glDispatchCompute((gridW + 15) / 16, (gridH + 15) / 16, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+                GLES31.glUseProgram(smoothProgram)
+                gl.setInts(smoothProgram, "gridSize", gridW, gridH)
+                GLES31.glDispatchCompute((gridW + 15) / 16, (gridH + 15) / 16, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+                mark("ltm")
+            }
+
             GLES31.glUseProgram(toneProgram)
+            GLES31.glUniform1i(gl.loc(toneProgram, "hasLtm"), if (useLtm) 1 else 0)
+            GLES31.glUniform1f(gl.loc(toneProgram, "ltmC"), 1f - 0.5f * s.look.localTone)
+            GLES31.glUniform1f(gl.loc(toneProgram, "ltmMid"), (Math.log(LTM_KEY.toDouble()) / Math.log(2.0)).toFloat())
+            gl.setInts(toneProgram, "grid", gridW, gridH)
             gl.setInts(toneProgram, "size", width, height)
             gl.setInts(toneProgram, "redAt", s.cfa.redX, s.cfa.redY)
             GLES31.glUniform3f(gl.loc(toneProgram, "wb"), s.wb[0], s.wb[1], s.wb[2])
@@ -99,10 +138,37 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform1f(gl.loc(toneProgram, "saturation"), s.look.saturation)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveX[0]"), 12, com.everettpenne.ix.IxLook.CURVE_X, 0)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveY[0]"), 12, s.look.curve ?: com.everettpenne.ix.IxLook.CURVE_X, 0)
-            GLES31.glUniform1i(gl.loc(toneProgram, "hasCurve"), if (s.look.curve != null) 1 else 0)
+            val useAutoTone = s.look.autoTone > 0f && autoToneAvailable
+            GLES31.glUniform1i(gl.loc(toneProgram, "hasCurve"), if (s.look.curve != null && !useAutoTone) 1 else 0)
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
             mark("tone")
+
+            if (useAutoTone) {
+                // the picture's own brightness distribution decides its tone curve: histogram it, build the curve on the CPU (tiny), apply it in place
+                val histBuffer = IntArray(1); GLES31.glGenBuffers(1, histBuffer, 0)
+                try {
+                    GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, histBuffer[0])
+                    GLES31.glBufferData(GLES31.GL_SHADER_STORAGE_BUFFER, 256 * 4, ByteBuffer.allocateDirect(256 * 4).order(ByteOrder.nativeOrder()), GLES31.GL_DYNAMIC_COPY)
+                    GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 7, histBuffer[0])
+                    GLES31.glUseProgram(lumaHistProgram)
+                    gl.setInts(lumaHistProgram, "size", width, height)
+                    GLES31.glDispatchCompute((width / 2 + 15) / 16, (height / 2 + 15) / 16, 1)
+                    GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                    val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
+                    val hist = IntArray(256).also { counts.get(it) }
+                    GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+                    val curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone)
+                    android.util.Log.i("HoltzmanGpu", "adaptive tone curve: " + curve.joinToString(" ") { "%.0f".format(java.util.Locale.ROOT, it * 255f) })
+                    GLES31.glUseProgram(curveProgram)
+                    gl.setInts(curveProgram, "size", width, height)
+                    GLES31.glUniform1fv(gl.loc(curveProgram, "curveX[0]"), 12, com.everettpenne.ix.IxLook.CURVE_X, 0)
+                    GLES31.glUniform1fv(gl.loc(curveProgram, "curveY[0]"), 12, curve, 0)
+                    GLES31.glDispatchCompute(gx, gy, 1)
+                    GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+                } finally { GLES31.glDeleteBuffers(1, histBuffer, 0) }
+                mark("autotone")
+            }
 
             var sigmas = FloatArray(3)
             if (s.look.denoise > 0f && noiseAwareFinish) {
@@ -138,6 +204,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 GLES31.glUniform1f(gl.loc(finishProgram, "core"), s.look.detailCore)
                 GLES31.glUniform1f(gl.loc(finishProgram, "clarity"), s.look.clarity)
                 GLES31.glUniform1f(gl.loc(finishProgram, "chromaMix"), s.look.chromaSmoothing)
+                GLES31.glUniform1f(gl.loc(finishProgram, "grain"), s.look.grain)
                 GLES31.glDispatchCompute(gx, gy, 1)
                 GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
                 mark("finish")
@@ -160,7 +227,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             mark("readback")
             if (PROFILE) android.util.Log.i("HoltzmanGpu", "render passes (ms):$laps")
             return bitmap
-        } finally { GLES31.glDeleteBuffers(7, buffers, 0) }
+        } finally { GLES31.glDeleteBuffers(9, buffers, 0) }
     }
 
     private fun upload(buffer: Int, data: ByteBuffer, size: Int) {
@@ -179,6 +246,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     private companion object {
         /** Logs how long each pass takes (stalls the pipeline to do it, so only for measuring). */
         const val PROFILE = false
+        /** The scene key (linear) the local tone mapping compresses about: what the exposure brings an average picture to. */
+        const val LTM_KEY = 0.12f
         /** The channel at (x, y): 0 red, 1 green, 2 blue, from where red sits in the 2x2 cell. Same rule as IxCfa.channelAt. */
         const val CHANNEL = """
             int channelAt(int x, int y) {
@@ -258,6 +327,41 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             }
         """
 
+        /** Histogram of the toned picture's display luma, 256 bins, over every second pixel each way. */
+        val LUMA_HISTOGRAM_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 3) readonly buffer In { uint src[]; };
+            layout(std430, binding = 7) buffer Hist { uint hist[]; };
+            uniform ivec2 size;
+            void main() {
+                ivec2 g = ivec2(gl_GlobalInvocationID.xy) * 2;
+                if (g.x >= size.x || g.y >= size.y) return;
+                uint v = src[g.y * size.x + g.x];
+                float l = dot(vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)), vec3(0.2126, 0.7152, 0.0722));
+                atomicAdd(hist[min(int(l + 0.5), 255)], 1u);
+            }
+        """
+
+        /** Applies a piecewise-linear tone curve to the toned picture in place (each pixel depends only on itself). */
+        val CURVE_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 3) buffer Pixels { uint px[]; };
+            uniform ivec2 size; uniform float curveX[12]; uniform float curveY[12];
+            float curved(float x) {
+                if (x <= 0.0) return curveY[0];
+                for (int i = 1; i < 12; i++) if (x <= curveX[i]) { float t = (x - curveX[i - 1]) / (curveX[i] - curveX[i - 1]); return curveY[i - 1] + (curveY[i] - curveY[i - 1]) * t; }
+                return curveY[11];
+            }
+            void main() {
+                ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+                if (p.x >= size.x || p.y >= size.y) return;
+                uint v = px[p.y * size.x + p.x];
+                vec3 c = vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)) / 255.0;
+                c = vec3(curved(c.r), curved(c.g), curved(c.b));
+                px[p.y * size.x + p.x] = uint(c.r * 255.0 + 0.5) | (uint(c.g * 255.0 + 0.5) << 8) | (uint(c.b * 255.0 + 0.5) << 16) | 0xFF000000u;
+            }
+        """
+
         /** Histograms the noise filter's response (IxDisplayNoise's layout) over every third pixel of the toned picture: 3 areas by brightness, 2048 bins each. */
         val NOISE_HISTOGRAM_SHADER = """#version 310 es
             layout(local_size_x = 16, local_size_y = 16) in;
@@ -279,6 +383,52 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 float r = abs(l[0] - 2.0 * l[1] + l[2] - 2.0 * l[3] + 4.0 * l[4] - 2.0 * l[5] + l[6] - 2.0 * l[7] + l[8]);
                 int bin = mean < 0.12 ? 0 : (mean < 0.4 ? 1 : 2);
                 atomicAdd(hist[bin * BINS + min(int(r / TOP * float(BINS)), BINS - 1)], 1u);
+            }
+        """
+
+        /** One value per 16x16 block: the log2 brightness (white-balanced, exposed linear luminance) of the block, from the raw mosaic's own samples. */
+        val GRID_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 2) readonly buffer Lin { float lin[]; };
+            layout(std430, binding = 8) writeonly buffer Grid { float grid[]; };
+            uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform float exposure;
+            $CHANNEL
+            void main() {
+                ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+                ivec2 cells = (size + 15) / 16;
+                if (g.x >= cells.x || g.y >= cells.y) return;
+                vec3 sum = vec3(0.0); vec3 n = vec3(0.0);
+                for (int j = 0; j < 16; j++) for (int i = 0; i < 16; i++) {
+                    int x = g.x * 16 + i; int y = g.y * 16 + j;
+                    if (x >= size.x || y >= size.y) continue;
+                    int c = channelAt(x, y);
+                    sum[c] += lin[y * size.x + x]; n[c] += 1.0;
+                }
+                vec3 m = sum / max(n, vec3(1.0));
+                float lum = 0.2126 * m.r * wb.x + 0.7152 * m.g * wb.y + 0.0722 * m.b * wb.z;
+                grid[g.y * cells.x + g.x] = log2(max(lum * exposure, 1e-4));
+            }
+        """
+
+        /** Smooths the block brightness map without crossing strong edges (a bilateral filter in log brightness), so the gain follows regions, not detail. */
+        val SMOOTH_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 8) readonly buffer Grid { float grid[]; };
+            layout(std430, binding = 9) writeonly buffer Base { float base[]; };
+            uniform ivec2 gridSize;
+            void main() {
+                ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+                if (g.x >= gridSize.x || g.y >= gridSize.y) return;
+                float c = grid[g.y * gridSize.x + g.x];
+                float num = 0.0; float den = 0.0;
+                for (int j = -6; j <= 6; j++) for (int i = -6; i <= 6; i++) {
+                    ivec2 q = clamp(g + ivec2(i, j), ivec2(0), gridSize - 1);
+                    float v = grid[q.y * gridSize.x + q.x];
+                    float d = v - c;
+                    float w = exp(-float(i * i + j * j) / 18.0 - d * d / 1.0);
+                    num += w * v; den += w;
+                }
+                base[g.y * gridSize.x + g.x] = num / den;
             }
         """
 
@@ -312,13 +462,20 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 3) readonly buffer In { uint src[]; };
             layout(std430, binding = 4) writeonly buffer Out { uint dst[]; };
             layout(std430, binding = 5) readonly buffer Luma { float luma3[]; };
-            uniform ivec2 size; uniform vec3 sigmas; uniform float denoise; uniform float detail; uniform float core; uniform float clarity; uniform float chromaMix;
+            uniform ivec2 size; uniform vec3 sigmas; uniform float denoise; uniform float detail; uniform float core; uniform float clarity; uniform float chromaMix; uniform float grain;
             vec3 px(int x, int y) {
                 uint v = src[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)];
                 return vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)) / 255.0;
             }
             float l3(int x, int y) { return luma3[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
             float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+            // film grain: a hash of the pixel position, averaged over a 2x2 so the grain has a size of a pixel or two like real grain
+            float hash(ivec2 p) {
+                uint h = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u;
+                h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12; h *= 0x297a2d39u; h ^= h >> 15;
+                return float(h) / 4294967295.0 - 0.5;
+            }
+            float grainAt(ivec2 p) { return (hash(p) + hash(p + ivec2(1, 0)) + hash(p + ivec2(0, 1)) + hash(p + ivec2(1, 1))) * 0.5 / 0.289; }
             float noiseAt(float l) {
                 if (l <= 0.06) return sigmas.x;
                 if (l <= 0.26) return mix(sigmas.x, sigmas.y, (l - 0.06) / 0.20);
@@ -360,6 +517,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 float cored = sign(dl) * max(abs(dl) - core * sm, 0.0);
                 float outL = lD + detail * (1.0 - 0.5 * shadow) * g * clamp(cored, -0.1, 0.1)
                            + clarity * (1.0 - shadow) * g * clamp(g1 - g4, -0.08, 0.08);
+                // grain restores the texture heavy smoothing takes out: none in the deepest shadows, where it would only read as noise, and less in highlights
+                if (grain > 0.0) outL += grain / 255.0 * grainAt(p) * smoothstep(0.03, 0.2, m) * (1.0 - 0.6 * smoothstep(0.6, 1.0, m));
                 vec3 o = clamp(vec3(outL) + chroma, 0.0, 1.0);
                 dst[p.y * size.x + p.x] = uint(o.r * 255.0 + 0.5) | (uint(o.g * 255.0 + 0.5) << 8) | (uint(o.b * 255.0 + 0.5) << 16) | 0xFF000000u;
             }
@@ -405,8 +564,10 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 2) readonly buffer Lin { float lin[]; };
             layout(std430, binding = 3) writeonly buffer Out { uint pixelsOut[]; };
             layout(std430, binding = 6) readonly buffer Green { float green[]; };
+            layout(std430, binding = 9) readonly buffer Base { float base[]; };
             uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform mat3 ccm; uniform float exposure;
             uniform float blackPoint; uniform float contrast; uniform float saturation; uniform float curveX[12]; uniform float curveY[12]; uniform int hasCurve;
+            uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm;
             const float EPS = 0.02;
             $CHANNEL
             float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
@@ -446,6 +607,15 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 }
                 vec3 w = vec3(max(r, 0.0) * wb.x, max(gr, 0.0) * wb.y, max(b, 0.0) * wb.z);
                 vec3 o = (ccm * w) * exposure;
+                if (hasLtm == 1) {
+                    // the brightness of the neighbourhood (a smoothed, edge-preserving map at 1/16 resolution), sampled bilinearly
+                    vec2 gp = (vec2(p) + 0.5) / 16.0 - 0.5;
+                    ivec2 g0 = ivec2(floor(gp)); vec2 f = gp - vec2(g0);
+                    ivec2 a = clamp(g0, ivec2(0), grid - 1); ivec2 b = clamp(g0 + 1, ivec2(0), grid - 1);
+                    float nb = mix(mix(base[a.y * grid.x + a.x], base[a.y * grid.x + b.x], f.x), mix(base[b.y * grid.x + a.x], base[b.y * grid.x + b.x], f.x), f.y);
+                    // compress the range of the neighbourhood brightness about the scene's key: shadows come up, highlights ease down, local detail is untouched
+                    o *= clamp(exp2((ltmC - 1.0) * (nb - ltmMid)), 0.6, 3.0);
+                }
                 vec3 d = look(vec3(srgb(shoulder(o.r)), srgb(shoulder(o.g)), srgb(shoulder(o.b))));
                 pixelsOut[p.y * size.x + p.x] = byteOf(d.r) | (byteOf(d.g) << 8) | (byteOf(d.b) << 16) | 0xFF000000u;
             }

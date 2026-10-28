@@ -191,3 +191,22 @@ The shaders written without the phone (directional demosaic, RAW denoise, noise-
 - **The camera's own noise profile agrees with our measurement.** Per frame, `SENSOR_NOISE_PROFILE` (S, O, normalised to the white level) times the 959-count range gives shot gains of 0.18 (ISO 99), 0.36, 0.70, 1.40, 2.8 and 5.6 (ISO 3194), against our fitted 0.184 to 5.28; read variances within about 1.5x. The dataset's `meta.json` records it per frame.
 - **Bug found: out of memory on back-to-back bursts.** Direct buffers count against the 256 MB Java heap; the camera callbacks kept the previous burst's six 24 MB frames alive until the next burst replaced them, so the 40-frame clean reference died on its second burst. Fixed (buffers dropped on delivery, a failure is reported instead of ending the app, a partly written scene is marked `"complete": false`, and the app asks for a large heap). Re-run: 40 frames at one ISO and exposure, complete.
 - **Focus.** With the preview's continuous autofocus the burst could be sharp on the far wall and soft on near objects (the factory scene: focus at 0.14 diopters, about 7 m, with objects at 0.5 to 1 m soft). The shutter now runs a fresh scan aimed at the centre of the frame and locks it (unless the user tapped). In that scene the centre of the frame is the far wall, so it still locked near infinity (0.005 diopters): nothing but a tap, or subject detection, would pick the headphones. Handheld scenes earlier in the day held 0.65 to 5.0 diopters with at most 0.07 drift across a burst.
+
+## Local tone mapping, grain and an adaptive tone curve (2026-10-28, from the Pixel app's stack)
+
+Ideas taken from the structure of Google's pipeline as seen in `pixel-camera-re/REPORT.md` (a multi-scale contrast stage, a separate film-grain stage after denoising, tone chosen per picture); implemented with our own methods.
+
+- **Local tone mapping** (`localTone`, GPU): a 1/16-resolution map of the log brightness of each block (from the raw mosaic's own samples), smoothed with an edge-preserving bilateral filter so it follows regions and not detail, then used as a per-pixel gain that compresses the neighbourhood brightness about the scene key (lifts shadows, eases highlights, capped at +1.6 / -0.7 stops). Strength 0.35.
+- **Film grain** (`grain`, GPU): a hashed noise, averaged over 2x2 so it is a pixel or two across, scaled by brightness (none in the deepest shadows, less in highlights), 1.2 levels of 255 at most, added at the end of the finish. It is in the JPEG only, never the DNG.
+- **Adaptive tone curve** (`autoTone`, `IxAutoTone`): replaces the fixed curve. Two Pixel camera app pictures of different scenes (a dim room, a bright factory desk) land on almost the same luma anchors: median 82 and 92, 95th percentile 183 and 194, 99th 206 in both, darkest percent near black. The curve is built per picture from its own brightness distribution (a 256-bin histogram on the GPU) so its ranks land on those targets (1%: 4, 5%: 14, 25%: 48, 50%: 87, 95%: 188, 99%: 206 of 255), blended by strength and limited to slopes between 0.45 and 2 so flat or contrasty scenes do not band. The fixed curve fitted to the first scene alone had left the second scene flat (darkest 1% at 31 where Google's was 7).
+
+Same-scene comparison on the phone (factory desk, Google camera app against Holtzman), luma percentiles 1/5/25/50/75/95/99:
+
+| | Google | fixed curve + local tone 0.5 | adaptive curve + local tone 0.35 |
+|---|---|---|---|
+| luma | 7 / 20 / 49 / 92 / 165 / 194 / 206 | 31 / 41 / 61 / 91 / 136 / 162 / 178 | 13 / 20 / 45 / 84 / 144 / 186 / 209 |
+| local contrast (25 px std) | 19.5 | 13.8 | 17.2 |
+| pixels under 20 | 5.2% | 0.0% | 4.8% |
+| mean saturation | 95 | 92 | 113 (then lowered the finish's saturation from 1.15 to 1.08) |
+
+Two scenes is a thin basis for the targets: the 75th percentile, for example, differs between them (127 and 165) and is deliberately not anchored. More Google-app pairs would tighten them. The local tone mapping, grain and adaptive curve exist only on the GPU path; the CPU fallback renderer applies the fixed look without them.
