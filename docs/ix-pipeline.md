@@ -256,3 +256,18 @@ On the factory pictures the ceiling lamps came out pinkish where the Pixel app's
 **Not done, with reasons.** *Variance-stabilising transform before the spatial denoise:* the denoise already sets its tolerance from the signal-dependent variance of each cell (shot x signal + read), which is what the transform buys, so nothing to gain. *DNG colour matrices:* the as-shot white balance, not the matrix, is what differs from the Pixel app's warmer look (its wall is about 6% less blue); a DNG matrix keeps the camera's own white balance and would not change that, so it is not the fix; a deliberate warmth bias, tuned on more Google pairs, would be.
 
 **Tone map halos: checked, none seen.** A ceiling lamp against a dark surround in a same-scene pair (Pixel app against Holtzman before the highlight rule) shows no halo or glow band around the lamp from the local tone mapping; the lamp itself was a flat, slightly pink white (the cause of the highlight rule above), against the Pixel app's brighter core with a bluish rim. One lamp in one picture, not a survey.
+
+## The TPU is reachable through NNAPI (2026-10-28, measured on the phone)
+
+LiteRT's own route to the TPU (compiling on the device through the Edge TPU app service) is refused for apps that are not on Google's list (error 16, above). NNAPI is a different door. The phone has an NNAPI driver for the TPU, `android.hardware.neuralnetworks.IDevice/google-edgetpu` (service `hal_neuralnetworks_darwinn`, running), next to the Edge TPU app service that refused us. The classic TensorFlow Lite runtime (2.16.1) still carries the NNAPI delegate; `tools/nnapi-probe` is a small app that runs our two test models (a 7-layer, 32-channel convolutional network over 1024 x 1024) through it:
+
+| path | int8 model | fp16-weights model |
+|---|---|---|
+| CPU, 4 threads (classic TFLite) | 1247 ms | 3437 ms |
+| NNAPI pinned to `google-edgetpu`, no CPU fallback | **7 ms** | **10 ms** |
+| NNAPI default device choice | 7 ms | 10 ms |
+| (LiteRT GPU, from before) | 37 ms | 38 ms |
+
+Output digests: int8 CPU 11690.373, NNAPI 11686.154; fp16 CPU 11857.361, NNAPI 11852.181: close (0.04%) but not equal, which is what different arithmetic on different hardware looks like, and the timing is two orders of magnitude from the CPU's, so this is the TPU and not a silent fall-back (the LiteRT NPU attempt returned bit-identical output at CPU speed). About 5 times faster than the GPU for the same network, and the TPU is far kinder to the battery.
+
+**Caveats.** NNAPI was deprecated in Android 15; it is present and working on this phone's Android 17, but it may go, and nothing guarantees other builds keep the TPU driver. One synthetic network of plain convolutions: a real model with other operations may be only partly supported (the driver's supported-operation list is the limit; the delegate pinned to one device leaves unsupported operations to the CPU). The timing is a warm run after one build/compile pass (first run about 110 ms, build 0.4 to 1 s). Whether the camera's own use of the TPU competes with ours is untested. This says nothing yet about what to run on it: a learned denoiser is the obvious candidate and needs a trained model.
