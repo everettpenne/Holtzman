@@ -1,0 +1,72 @@
+package com.everettpenne.holtzman
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.everettpenne.holtzman.save.GlContext
+import com.everettpenne.holtzman.save.GpuRender
+import com.everettpenne.ix.IxCfa
+import com.everettpenne.ix.IxLook
+import com.everettpenne.ix.IxRender
+import com.everettpenne.ix.IxRenderSettings
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNotNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.util.Random
+
+/** The GPU renderer against the CPU renderer, on whatever device runs it (skipped where there is no OpenGL ES 3.1 compute). */
+@RunWith(AndroidJUnit4::class)
+class GpuRenderTest {
+    private val w = 256; private val h = 192
+    private fun mosaic(noise: Float, seed: Long): ShortArray {
+        val rnd = Random(seed)
+        return ShortArray(w * h) { i ->
+            val x = i % w; val y = i / w
+            val signal = 40f + 500f * x / w + if (y > h / 2) 120f else 0f   // a gradient with a hard step across the middle
+            (64f + signal + rnd.nextGaussian().toFloat() * noise).coerceIn(0f, 1023f).toInt().toShort()
+        }
+    }
+    private fun settings(look: IxLook) = IxRenderSettings(IxCfa.RGGB, intArrayOf(64, 64, 64, 64), 1023, floatArrayOf(1.6f, 1f, 1.9f), floatArrayOf(1.4f, -0.3f, -0.1f, -0.2f, 1.3f, -0.1f, 0f, -0.4f, 1.4f), null, look = look)
+    private val gl = runCatching { GlContext() }.getOrNull()
+
+    @Test fun theBaseRenderMatchesTheCpuRenderer() {
+        assumeNotNull(gl)
+        val raw = mosaic(0f, 1)
+        val look = IxLook(blackPoint = 0.03f, contrast = 0.3f, saturation = 1.1f)   // no finishing passes: sharpen = 0, denoise = 0
+        val s = settings(look)
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            val bmp = gpu.toBitmap(raw, w, h, s, 1.5f)
+            val cpu = IntArray(w * h); IxRender.renderRows(raw, w, h, 0, h, s, 1.5f, cpu)
+            val g = IntArray(w * h); bmp.getPixels(g, 0, w, 0, 0, w, h)
+            var worst = 0
+            // away from the picture's edges and the hard step: the GPU's finishing pass smooths colour a little where there is an edge, by design
+            for (y in 10 until h - 10) for (x in 10 until w - 10) {
+                if (Math.abs(y - h / 2) < 8) continue
+                val i = y * w + x
+                for (shift in intArrayOf(0, 8, 16)) worst = maxOf(worst, Math.abs(((cpu[i] shr shift) and 255) - ((g[i] shr shift) and 255)))
+            }
+            assertTrue("largest channel difference $worst", worst <= 2)
+        }
+    }
+
+    @Test fun theNoiseAwareFinishBuildsAndSmoothsNoiseWithoutSmearingTheEdge() {
+        assumeNotNull(gl)
+        val raw = mosaic(14f, 2)
+        val plain = settings(IxLook(sharpen = 0f))
+        val finished = settings(IxLook(sharpen = 1.8f, denoise = 0.7f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f))
+        GpuRender(gl!!, ownsContext = false).use { gpu ->
+            assertTrue("the noise-aware finish did not build on this device", gpu.noiseAwareFinish)
+            fun luma(b: android.graphics.Bitmap): FloatArray { val px = IntArray(w * h); b.getPixels(px, 0, w, 0, 0, w, h); return FloatArray(w * h) { 0.2126f * ((px[it] shr 16) and 255) + 0.7152f * ((px[it] shr 8) and 255) + 0.0722f * (px[it] and 255) } }
+            val a = luma(gpu.toBitmap(raw, w, h, plain, 1.5f)); val b = luma(gpu.toBitmap(raw, w, h, finished, 1.5f))
+            // pixel-scale noise in a flat band away from the step, as the standard deviation of the difference from a 3x3 mean
+            fun noise(l: FloatArray, y0: Int, y1: Int): Float { var s = 0.0; var n = 0; for (y in y0 until y1) for (x in 20 until w - 20) { var m = 0f; for (j in -1..1) for (i in -1..1) m += l[(y + j) * w + x + i]; m /= 9f; s += (l[y * w + x] - m).let { it * it }; n++ }; return Math.sqrt(s / n).toFloat() }
+            val before = noise(a, 20, 70); val after = noise(b, 20, 70)
+            assertTrue("noise $before -> $after", after < before * 0.7f)
+            // the hard step across the middle must stay hard: the jump between the rows either side of it keeps most of its size
+            fun step(l: FloatArray): Float { var s = 0f; for (x in 40 until w - 40) s += l[(h / 2 + 2) * w + x] - l[(h / 2 - 3) * w + x]; return s / (w - 80) }
+            assertTrue("step ${step(a)} -> ${step(b)}", step(b) > step(a) * 0.8f)
+            val out = b.also { }
+            assertEquals(h * w, a.size)
+        }
+    }
+}

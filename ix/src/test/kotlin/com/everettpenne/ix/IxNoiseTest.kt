@@ -39,3 +39,28 @@ class IxMergeParamsTest {
         assertTrue(abs(mergeParamsForIso(860).shot - 1.46f) < 0.05f)   // the ISO the first, single-capture fit came from
     }
 }
+
+class IxDisplayNoiseTest {
+    private fun picture(w: Int, h: Int, sigma: Float, seed: Long): java.nio.IntBuffer {
+        val rnd = Random(seed)
+        val b = java.nio.IntBuffer.allocate(w * h)
+        for (i in 0 until w * h) {
+            val x = i % w; val y = i / w
+            // a smooth gradient (dark to bright left to right) with a hard edge across the middle, plus Gaussian noise of the given std (in 0..1 units)
+            val base = (0.05f + 0.85f * x / w) + if (y > h / 2) 0.1f else 0f
+            val v = ((base + rnd.nextGaussian().toFloat() * sigma).coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+            b.put(v or (v shl 8) or (v shl 16) or (0xFF shl 24))
+        }
+        b.rewind(); return b
+    }
+
+    @Test fun findsTheNoiseLevelDespiteTheGradientAndTheEdge() {
+        val est = IxDisplayNoise.estimate(picture(1200, 900, 0.02f, 3), 1200, 900)
+        for (v in est) assertTrue("estimate $v", abs(v - 0.02f) < 0.004f)
+    }
+
+    @Test fun aCleanPictureHasNearZeroNoise() {
+        val est = IxDisplayNoise.estimate(picture(1200, 900, 0f, 4), 1200, 900)
+        for (v in est) assertTrue("estimate $v", v < 0.003f)
+    }
+}

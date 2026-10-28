@@ -59,3 +59,53 @@ public object IxNoise {
         return IxNoiseFit(slope.toFloat(), (my - slope * mx).toFloat(), signals.size, bs, bv)
     }
 }
+
+/**
+ * Estimates how noisy a finished 8-bit picture is, per brightness, so the finishing pass can smooth by exactly as much as the noise needs: the
+ * median absolute response of Immerkaer's noise filter (a 3x3 Laplacian-of-Laplacian that cancels smooth structure), taken separately for dark,
+ * middle and bright areas. The median ignores the few pixels sitting on real edges and texture, so the estimate follows the noise, not the scene.
+ */
+public object IxDisplayNoise {
+    /** Brightness (0..1) at which the three returned noise levels apply. */
+    public val CENTRES: FloatArray = floatArrayOf(0.06f, 0.26f, 0.7f)
+
+    /**
+     * [argb] holds the picture's pixels as ints with red in the low byte (the order the renderer writes them), [width] x [height]. Returns the noise
+     * standard deviation of luma, in 0..1 units, for dark (below 0.12), middle (0.12 to 0.4) and bright (above 0.4) areas; a bin with too few pixels
+     * takes the mean of the others.
+     */
+    public fun estimate(argb: java.nio.IntBuffer, width: Int, height: Int, stride: Int = 3): FloatArray {
+        val bins = 2048; val top = 0.5f
+        val hist = Array(3) { IntArray(bins) }
+        val count = IntArray(3)
+        val l = FloatArray(9)
+        var y = stride
+        while (y < height - stride) {
+            var x = stride
+            while (x < width - stride) {
+                var k = 0; var mean = 0f
+                for (j in -1..1) for (i in -1..1) {
+                    val v = argb.get((y + j * stride) * width + x + i * stride)
+                    val lum = (0.2126f * (v and 0xFF) + 0.7152f * ((v shr 8) and 0xFF) + 0.0722f * ((v shr 16) and 0xFF)) / 255f
+                    l[k++] = lum; mean += lum
+                }
+                mean /= 9f
+                val r = abs(l[0] - 2 * l[1] + l[2] - 2 * l[3] + 4 * l[4] - 2 * l[5] + l[6] - 2 * l[7] + l[8])
+                val bin = if (mean < 0.12f) 0 else if (mean < 0.4f) 1 else 2
+                hist[bin][minOf(((r / top) * bins).toInt(), bins - 1)]++; count[bin]++
+                x += stride
+            }
+            y += stride
+        }
+        val out = FloatArray(3) { -1f }
+        for (b in 0..2) if (count[b] >= 200) {
+            var acc = 0; var idx = 0
+            while (idx < bins - 1 && acc + hist[b][idx] < count[b] / 2) { acc += hist[b][idx]; idx++ }
+            out[b] = (idx + 0.5f) * top / bins / 4.047f   // the filter's output is 6 sigma wide; the median of its magnitude is 0.6745 of that
+        }
+        val known = out.filter { it >= 0f }
+        val fill = if (known.isEmpty()) 0.01f else known.average().toFloat()
+        for (b in 0..2) if (out[b] < 0f) out[b] = fill
+        return out
+    }
+}

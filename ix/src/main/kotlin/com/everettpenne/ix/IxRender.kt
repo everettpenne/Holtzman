@@ -45,6 +45,16 @@ public class IxLook(
     public val sharpenCore: Float = 2f,
     /** A tone curve applied last: the output display value (0..1) at each of [CURVE_X], linear between. Null leaves the tones alone. */
     public val curve: FloatArray? = null,
+    /**
+     * The noise-aware finish (GPU only): [denoise] is how many noise standard deviations apart two neighbours may be and still be averaged (0 = this
+     * finish off, use [sharpen] alone); [detail] is the gain on fine detail left after denoising, [detailCore] the noise multiple below which detail is
+     * left alone, [clarity] the gain on medium-scale local contrast, [chromaSmoothing] how far colour is pulled toward its edge-aware average.
+     */
+    public val denoise: Float = 0f,
+    public val detail: Float = 0f,
+    public val detailCore: Float = 0.5f,
+    public val clarity: Float = 0f,
+    public val chromaSmoothing: Float = 0.85f,
 ) {
     init { require(curve == null || curve.size == CURVE_X.size) { "the curve needs ${CURVE_X.size} points" } }
 

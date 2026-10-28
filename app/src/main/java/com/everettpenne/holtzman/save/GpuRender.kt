@@ -17,17 +17,28 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     private var linearProgram = 0
     private var toneProgram = 0
     private var sharpenProgram = 0
+    private var lumaProgram = 0
+    private var finishProgram = 0
+    /** False when the noise-aware finish could not be built on this device: the plain sharpen pass is used instead. */
+    var noiseAwareFinish = false; private set
 
     init {
         try { linearProgram = gl.program(LINEAR_SHADER); toneProgram = gl.program(toneShader()); sharpenProgram = gl.program(SHARPEN_SHADER) } catch (t: Throwable) { close(); throw t }
+        // the noise-aware finish is newer: if its shaders do not build here the render still works, with the plain sharpen pass
+        try {
+            lumaProgram = gl.program(LUMA3_SHADER); finishProgram = gl.program(FINISH_SHADER)
+            for (u in listOf("size", "sigmas", "denoise", "detail", "core", "clarity", "chromaMix")) gl.loc(finishProgram, u)
+            gl.loc(lumaProgram, "size")
+            noiseAwareFinish = true
+        } catch (t: Throwable) { android.util.Log.w("HoltzmanGpu", "noise-aware finish unavailable, using the plain sharpen pass: $t") }
     }
 
     /** Renders the whole mosaic [raw] (a [width] x [height] ARGB bitmap comes back), with the same inputs as the CPU renderer. */
     fun toBitmap(raw: ShortArray, width: Int, height: Int, s: IxRenderSettings, exposure: Float): Bitmap {
         require(raw.size >= width * height && width % 2 == 0) { "need a tight mosaic with an even width" }
         val pixels = width * height
-        val buffers = IntArray(5)   // raw, shading gains, linear floats, packed output, sharpened output
-        GLES31.glGenBuffers(5, buffers, 0)
+        val buffers = IntArray(6)   // raw, shading gains, linear floats, packed output, finished output, 3x3 mean luma
+        GLES31.glGenBuffers(6, buffers, 0)
         try {
             val rawBytes = ByteBuffer.allocateDirect(pixels * 2).order(ByteOrder.nativeOrder()).also { it.asShortBuffer().put(raw, 0, pixels); it.rewind() }
             upload(buffers[0], rawBytes, pixels * 2)
@@ -38,11 +49,13 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             allocate(buffers[2], pixels * 4)
             allocate(buffers[3], pixels * 4)
             allocate(buffers[4], pixels * 4)
+            if (s.look.denoise > 0f && noiseAwareFinish) allocate(buffers[5], pixels * 4)
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffers[0])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, buffers[1])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 2, buffers[2])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 3, buffers[3])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 4, buffers[4])
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 5, buffers[5])
             val gx = (width + 15) / 16; val gy = (height + 15) / 16
 
             GLES31.glUseProgram(linearProgram)
@@ -71,13 +84,37 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glDispatchCompute(gx, gy, 1)
             GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
 
-            // sharpen: reads the finished picture (binding 3) and writes the sharpened one (binding 4)
-            GLES31.glUseProgram(sharpenProgram)
-            gl.setInts(sharpenProgram, "size", width, height)
-            GLES31.glUniform1f(gl.loc(sharpenProgram, "amount"), s.look.sharpen)
-            GLES31.glUniform1f(gl.loc(sharpenProgram, "core"), s.look.sharpenCore / 255f)
-            GLES31.glDispatchCompute(gx, gy, 1)
-            GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+            if (s.look.denoise > 0f && noiseAwareFinish) {
+                // how noisy the toned picture is, by brightness: read it back (one pass over a sample of it) so the smoothing matches the noise
+                GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+                GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, buffers[3])
+                val view = GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, pixels * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer
+                val sigmas = com.everettpenne.ix.IxDisplayNoise.estimate(view.order(ByteOrder.nativeOrder()).asIntBuffer(), width, height)
+                GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
+                android.util.Log.i("HoltzmanGpu", "display noise (levels of 255) dark %.2f mid %.2f bright %.2f".format(java.util.Locale.ROOT, sigmas[0] * 255, sigmas[1] * 255, sigmas[2] * 255))
+                GLES31.glUseProgram(lumaProgram)
+                gl.setInts(lumaProgram, "size", width, height)
+                GLES31.glDispatchCompute(gx, gy, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+                GLES31.glUseProgram(finishProgram)
+                gl.setInts(finishProgram, "size", width, height)
+                GLES31.glUniform3f(gl.loc(finishProgram, "sigmas"), sigmas[0], sigmas[1], sigmas[2])
+                GLES31.glUniform1f(gl.loc(finishProgram, "denoise"), s.look.denoise)
+                GLES31.glUniform1f(gl.loc(finishProgram, "detail"), s.look.detail)
+                GLES31.glUniform1f(gl.loc(finishProgram, "core"), s.look.detailCore)
+                GLES31.glUniform1f(gl.loc(finishProgram, "clarity"), s.look.clarity)
+                GLES31.glUniform1f(gl.loc(finishProgram, "chromaMix"), s.look.chromaSmoothing)
+                GLES31.glDispatchCompute(gx, gy, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+            } else {
+                // plain sharpen: reads the finished picture (binding 3) and writes the sharpened one (binding 4)
+                GLES31.glUseProgram(sharpenProgram)
+                gl.setInts(sharpenProgram, "size", width, height)
+                GLES31.glUniform1f(gl.loc(sharpenProgram, "amount"), s.look.sharpen)
+                GLES31.glUniform1f(gl.loc(sharpenProgram, "core"), s.look.sharpenCore / 255f)
+                GLES31.glDispatchCompute(gx, gy, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
+            }
 
             GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, buffers[4])
             val mapped = GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, pixels * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer
@@ -86,7 +123,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
             check(GLES31.glGetError() == GLES31.GL_NO_ERROR) { "GL error during the render" }
             return bitmap
-        } finally { GLES31.glDeleteBuffers(5, buffers, 0) }
+        } finally { GLES31.glDeleteBuffers(6, buffers, 0) }
     }
 
     private fun upload(buffer: Int, data: ByteBuffer, size: Int) {
@@ -178,6 +215,89 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 lOut += amount * (1.0 - shadow) * clamp(cored, -0.1, 0.1);
                 c = clamp(vec3(lOut) + chroma, 0.0, 1.0);
                 dst[p.y * size.x + p.x] = uint(c.r * 255.0 + 0.5) | (uint(c.g * 255.0 + 0.5) << 8) | (uint(c.b * 255.0 + 0.5) << 16) | 0xFF000000u;
+            }
+        """
+
+        /** The 3x3 mean luma of the toned picture: a steadier picture of where the edges are than single noisy pixels give. */
+        val LUMA3_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 3) readonly buffer In { uint src[]; };
+            layout(std430, binding = 5) writeonly buffer Luma { float luma3[]; };
+            uniform ivec2 size;
+            float lumaAt(int x, int y) {
+                uint v = src[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)];
+                return dot(vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)), vec3(0.2126, 0.7152, 0.0722)) / 255.0;
+            }
+            void main() {
+                ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+                if (p.x >= size.x || p.y >= size.y) return;
+                float a = 0.0;
+                for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) a += lumaAt(p.x + i, p.y + j);
+                luma3[p.y * size.x + p.x] = a / 9.0;
+            }
+        """
+
+        /**
+         * The noise-aware finish (prototyped and tuned on a host against the Pixel app's pictures, see docs/ix-pipeline.md): an edge-aware 7x7 average
+         * of luma and colour whose reach follows the measured noise (neighbours count only if their 3x3 mean is within [denoise] noise deviations),
+         * then sharpening of the detail that survives (cored at a multiple of the noise), a medium-scale local-contrast boost, all faded in the
+         * shadows and near the colour gamut's edge, where clipped channels would turn detail into speckle.
+         */
+        val FINISH_SHADER = """#version 310 es
+            layout(local_size_x = 16, local_size_y = 16) in;
+            layout(std430, binding = 3) readonly buffer In { uint src[]; };
+            layout(std430, binding = 4) writeonly buffer Out { uint dst[]; };
+            layout(std430, binding = 5) readonly buffer Luma { float luma3[]; };
+            uniform ivec2 size; uniform vec3 sigmas; uniform float denoise; uniform float detail; uniform float core; uniform float clarity; uniform float chromaMix;
+            vec3 px(int x, int y) {
+                uint v = src[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)];
+                return vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)) / 255.0;
+            }
+            float l3(int x, int y) { return luma3[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
+            float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+            float noiseAt(float l) {
+                if (l <= 0.06) return sigmas.x;
+                if (l <= 0.26) return mix(sigmas.x, sigmas.y, (l - 0.06) / 0.20);
+                if (l <= 0.7) return mix(sigmas.y, sigmas.z, (l - 0.26) / 0.44);
+                return sigmas.z;
+            }
+            void main() {
+                ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+                if (p.x >= size.x || p.y >= size.y) return;
+                vec3 c = px(p.x, p.y);
+                float l = luma(c);
+                float m = l3(p.x, p.y);
+                float sm = noiseAt(m);
+                float rs2 = 2.0 * denoise * denoise * sm * sm + 1e-12;
+                const float gk[5] = float[5](0.0625, 0.25, 0.375, 0.25, 0.0625);
+                float numL = 0.0; vec3 numC = vec3(0.0); float den = 0.0; float g1 = 0.0;
+                for (int dy = -3; dy <= 3; dy++) for (int dx = -3; dx <= 3; dx++) {
+                    vec3 q = px(p.x + dx, p.y + dy);
+                    float lq = luma(q);
+                    float d = l3(p.x + dx, p.y + dy) - m;
+                    float w = exp(-(d * d) / rs2 - float(dx * dx + dy * dy) / 5.12);
+                    numL += w * lq; numC += w * (q - vec3(lq)); den += w;
+                    if (abs(dx) <= 2 && abs(dy) <= 2) g1 += gk[dx + 2] * gk[dy + 2] * lq;
+                }
+                float lD = numL / den;
+                vec3 chroma = (c - vec3(l)) * (1.0 - chromaMix) + (numC / den) * chromaMix;
+                // the wide blur for local contrast: a sparse 5x5 over the 3x3-smoothed luma, weights of a Gaussian of about 3 pixels
+                float g4 = 0.0; float g4w = 0.0;
+                for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
+                    float w = exp(-float((i * i + j * j) * 4) / 16.0);
+                    g4 += w * l3(p.x + i * 2, p.y + j * 2); g4w += w;
+                }
+                g4 /= g4w;
+                float s = clamp((m - 0.04) / 0.18, 0.0, 1.0);
+                float shadow = 1.0 - s * s * (3.0 - 2.0 * s);
+                float g = clamp((min(c.r, min(c.g, c.b)) - 0.03) / 0.12, 0.0, 1.0);
+                g = g * g * (3.0 - 2.0 * g);
+                float dl = lD - g1;
+                float cored = sign(dl) * max(abs(dl) - core * sm, 0.0);
+                float outL = lD + detail * (1.0 - 0.5 * shadow) * g * clamp(cored, -0.1, 0.1)
+                           + clarity * (1.0 - shadow) * g * clamp(g1 - g4, -0.08, 0.08);
+                vec3 o = clamp(vec3(outL) + chroma, 0.0, 1.0);
+                dst[p.y * size.x + p.x] = uint(o.r * 255.0 + 0.5) | (uint(o.g * 255.0 + 0.5) << 8) | (uint(o.b * 255.0 + 0.5) << 16) | 0xFF000000u;
             }
         """
 
