@@ -16,4 +16,15 @@ kotlin {
     }
 }
 
-dependencies { testImplementation("junit:junit:4.13.2") }
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")   // for the harness and tests on the JVM (Android has it built in)
+}
+
+// Runs the merge engine on real bursts from the camera's dataset mode; see src/test/kotlin/.../Harness.kt
+tasks.register<JavaExec>("harness") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.everettpenne.ix.HarnessKt")
+    args = listOf(project.findProperty("data")?.toString() ?: "")
+    jvmArgs("-Xmx6g")
+}

@@ -271,3 +271,18 @@ LiteRT's own route to the TPU (compiling on the device through the Edge TPU app 
 Output digests: int8 CPU 11690.373, NNAPI 11686.154; fp16 CPU 11857.361, NNAPI 11852.181: close (0.04%) but not equal, which is what different arithmetic on different hardware looks like, and the timing is two orders of magnitude from the CPU's, so this is the TPU and not a silent fall-back (the LiteRT NPU attempt returned bit-identical output at CPU speed). About 5 times faster than the GPU for the same network, and the TPU is far kinder to the battery.
 
 **Caveats.** NNAPI was deprecated in Android 15; it is present and working on this phone's Android 17, but it may go, and nothing guarantees other builds keep the TPU driver. One synthetic network of plain convolutions: a real model with other operations may be only partly supported (the driver's supported-operation list is the limit; the delegate pinned to one device leaves unsupported operations to the CPU). The timing is a warm run after one build/compile pass (first run about 110 ms, build 0.4 to 1 s). Whether the camera's own use of the TPU competes with ours is untested. This says nothing yet about what to run on it: a learned denoiser is the obvious candidate and needs a trained model.
+
+## Real handheld bursts through the merge engine (2026-10-28, ten scenes from the dataset mode)
+
+Ten handheld bursts (indoor, 6 frames each, ISO 29 to 434, exposures 4 to 11 ms, hand-shake 0.012 to 0.092 rad/s, tagged backlit/text/texture; no faces and no outdoor scenes) run through the Kotlin merge on the Mac (`./gradlew :ix:harness -Pdata=...`, `tools/prototypes/dng_to_raw.py`). Noise reduction of the merged mosaic against the reference frame (ideal for 6 frames is 2.45; the estimator is a median of integer filter responses, so the figures come in steps), and frames taken per cell:
+
+| frame weights | noise reduction over the ten scenes | frames per cell |
+|---|---|---|
+| the old rule (full weight at 0, none at 3 noise deviations: the one-deviation behaviour) | 1.86 to 2.50, mean 2.0 | 5.64 to 5.97 |
+| shipped (full to 2.5, none at 4.5) | 2.00 to 2.50, mean 2.3 | 5.82 to 5.99 |
+| lenient (full to 3.5, none at 6) | 2.00 to 2.50, mean 2.3 | 5.89 to 6.00 |
+| shipped weights, noise model from the camera's own per-frame profile | the same as our ISO model within one step | the same |
+
+So the new weighting is confirmed on real handheld frames, not only synthetic ones: the old rule is about 15% worse on average. The camera's own noise profile (S, O per frame, converted by the sensor range) gives the same merge as our fitted ISO model, which validates the model; there is no reason to switch. The one scene where a lenient rule did visibly better (ISO 434, backlit, text) does the same with the camera's profile, so the cause is the scene (real misalignment or clipped highlights making the frames disagree), not a wrong noise level. Alignment on real hands: 42 to 94% of tiles move, mean shift 0.7 to 5.8 cells (2 sensor pixels each), at most 21.6% of tiles needing 12 or more cells of shift (the most-shaken scene); the engine's search range covers this. Merge time on the Mac, 12 MP, six frames: about 0.46 to 0.5 s.
+
+**Shake-aware exposure on these scenes:** it would not have changed any of them. The exposures (4 to 11 ms) are all at or below the limit the gyro rate gives (about 5.8 ms at the worst shake, 0.092 rad/s, against a 5.0 ms exposure). It only matters in dim light, which the ten scenes do not cover.
