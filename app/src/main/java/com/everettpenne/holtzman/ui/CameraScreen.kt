@@ -118,6 +118,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val warmthEff = if (kotlin.math.abs(warmthValue) < 1.5f) 0f else warmthValue
     var cropRatio by remember { mutableStateOf(PhotoRatio.entries.getOrElse(prefs.getInt("ratio", 0)) { PhotoRatio.FULL }) }
     var showPhotoSettings by remember { mutableStateOf(false) }
+    var levelOn by remember { mutableStateOf(prefs.getBoolean("level", false)) }
+    var histogramOn by remember { mutableStateOf(prefs.getBoolean("histogram", false)) }
+    LaunchedEffect(levelOn, histogramOn) { prefs.edit().putBoolean("level", levelOn).putBoolean("histogram", histogramOn).apply() }
     LaunchedEffect(cropRatio) { prefs.edit().putInt("ratio", cropRatio.ordinal).apply() }
     var dataset by remember { mutableStateOf(false) }
     var showDataset by remember { mutableStateOf(false) }
@@ -364,6 +367,13 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             if (r < full) { val band = size.height * (1f - r / full) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(size.width, band)); drawRect(shade, androidx.compose.ui.geometry.Offset(0f, size.height - band), androidx.compose.ui.geometry.Size(size.width, band)) }
             else { val band = size.width * (1f - full / r) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(band, size.height)); drawRect(shade, androidx.compose.ui.geometry.Offset(size.width - band, 0f), androidx.compose.ui.geometry.Size(band, size.height)) }
         })
+        // the level line and the histogram, over the picture
+        val roll by rememberRollDegrees(levelOn && !videoMode)
+        val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
+        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
+            LevelOverlay(roll, Modifier.matchParentSize())
+            HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
+        }
         if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
 
         // top bar: settings on the left; flash, timer and grid on the right
@@ -467,7 +477,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     if (showPhotoSettings) PhotoSettingsSheet(
         ratio = cropRatio, onRatio = { cropRatio = it }, ratioApplies = computational && rawAvailable,
         timer = timer, onTimer = { timer = it }, flash = flash, onFlash = { flash = it }, flashAvailable = flashAvailable,
-        grid = grid, onGrid = { grid = it }, onDismiss = { showPhotoSettings = false })
+        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, onDismiss = { showPhotoSettings = false })
     if (showSettings) SettingsSheet(
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },

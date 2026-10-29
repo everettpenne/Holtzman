@@ -102,6 +102,7 @@ fun PhotoSettingsSheet(
     timer: TimerMode, onTimer: (TimerMode) -> Unit,
     flash: FlashMode, onFlash: (FlashMode) -> Unit, flashAvailable: Boolean,
     grid: Boolean, onGrid: (Boolean) -> Unit,
+    level: Boolean, onLevel: (Boolean) -> Unit, histogram: Boolean, onHistogram: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     GlassSheet(onDismiss) {
@@ -126,6 +127,10 @@ fun PhotoSettingsSheet(
             Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GlassChip(!grid, { onGrid(false) }) { Text("No grid", modifier = Modifier.padding(horizontal = 8.dp)) }
                 GlassChip(grid, { onGrid(true) }) { Text("Thirds grid", modifier = Modifier.padding(horizontal = 8.dp)) }
+            }
+            Row(Modifier.padding(horizontal = 4.dp).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(level, { onLevel(!level) }) { Text("Level", modifier = Modifier.padding(horizontal = 8.dp)) }
+                GlassChip(histogram, { onHistogram(!histogram) }) { Text("Histogram", modifier = Modifier.padding(horizontal = 8.dp)) }
             }
         }
     }
