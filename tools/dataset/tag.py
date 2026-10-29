@@ -33,15 +33,22 @@ def scene_dirs():
 
 
 def pixel_map():
-    """scene -> the Pixel photo's path under ROOT: from pixel_pairs.json (the older, time-matched pairs) and from each scene's own meta.json (paired captures)."""
+    """scene -> the Pixel photos' paths under ROOT (a list: two photos can belong to one scene), from pixel_pairs.json (the older, time-matched pairs)
+    and from PixelDoubles files named after their scene (paired captures)."""
     m = {}
     p = os.path.join(ROOT, 'pixel_pairs.json')
     if os.path.isfile(p):
         try:
             for pix, scene, _ in json.load(open(p)):
-                m[scene] = 'PixelDoubles/' + pix
+                m.setdefault(scene, []).append('PixelDoubles/' + pix)
         except Exception:
             pass
+    d = os.path.join(ROOT, 'PixelDoubles')
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.startswith('scene_') and f.lower().endswith('.jpg'):
+                l = m.setdefault(f[:-4], [])
+                if 'PixelDoubles/' + f not in l: l.append('PixelDoubles/' + f)
     return m
 
 
@@ -52,12 +59,12 @@ def read_meta(scene):
 
 def summary(scene, pix):
     m = read_meta(scene)
+    paths = list(pix.get(scene, []))
     px = m.get('pixelDouble')
-    if px: px = 'Dataset/' + px if not px.startswith('Dataset/') else px
-    path = ('PixelDoubles/' + os.path.basename(px)) if px else pix.get(scene)
-    if path and not os.path.isfile(os.path.join(ROOT, path)): path = None
+    if px and 'PixelDoubles/' + os.path.basename(px) not in paths: paths.append('PixelDoubles/' + os.path.basename(px))
+    paths = [p for p in paths if os.path.isfile(os.path.join(ROOT, p))]
     return {'scene': scene, 'kind': m.get('kind', ''), 'tags': m.get('tags', []), 'note': m.get('note', ''),
-            'preview': os.path.isfile(os.path.join(ROOT, scene, 'preview.jpg')), 'pixel': path,
+            'preview': os.path.isfile(os.path.join(ROOT, scene, 'preview.jpg')), 'pixel': paths,
             'shake': m.get('shakeRateAtStart'), 'iso': (m.get('autoAtStart') or {}).get('iso'), 'frames': len(m.get('frames', [])), 'zoom': m.get('zoom')}
 
 
@@ -74,9 +81,9 @@ def save(scene, tags, note):
     return m['tags']
 
 
-def thumb(rel, size=900):
+def thumb(rel, size=900):   # size 0: the picture as it is (for the enlarged view)
     src = os.path.join(ROOT, rel)
-    if Image is None: return open(src, 'rb').read()
+    if Image is None or size == 0: return open(src, 'rb').read()
     key = hashlib.md5((src + str(os.path.getmtime(src)) + str(size)).encode()).hexdigest() + '.jpg'
     cp = os.path.join(CACHE, key)
     if not os.path.isfile(cp):
@@ -97,30 +104,33 @@ PAGE = r'''<!doctype html><meta charset=utf-8><title>Tag the dataset</title><met
 .small{color:var(--dim);font-size:12px}
 #main{flex:1;overflow:auto;padding:16px 20px}
 h2{margin:0 0 4px;font-size:16px}.imgs{display:flex;gap:12px;margin:12px 0;flex-wrap:wrap}
-.imgs figure{margin:0;flex:1;min-width:280px}.imgs img{width:100%;border-radius:10px;background:#222;display:block}.imgs figcaption{color:var(--dim);font-size:12px;margin-top:4px}
+.imgs figure{margin:0;flex:1;min-width:280px}.imgs img{width:100%;border-radius:10px;background:#222;display:block;cursor:zoom-in}
+#big{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}#big img{max-width:96vw;max-height:96vh;border-radius:6px}.imgs figcaption{color:var(--dim);font-size:12px;margin-top:4px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 14px}.chip{padding:5px 11px;border-radius:99px;border:1px solid #444;background:var(--panel);cursor:pointer;user-select:none}
 .chip.on{background:var(--y);color:#000;border-color:var(--y);font-weight:600}
 textarea{width:100%;min-height:70px;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:8px;font:inherit}
 button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}button:hover{border-color:#666}
 #status{position:fixed;right:14px;bottom:12px;color:var(--dim)}label{color:var(--dim)}
 </style>
-<div id=list><div id=bar><input id=q type=search placeholder="Search scenes, tags, notes"><label><input type=checkbox id=untagged> untagged only</label><span class=small id=count></span></div><div id=rows></div></div>
-<div id=main><div class=small>Loading…</div></div><div id=status></div>
+<div id=list><div id=bar><input id=q type=search placeholder="Search scenes, tags, notes"><label><input type=checkbox id=untagged> untagged only</label><label><input type=checkbox id=withpix> with Pixel photo</label><span class=small id=count></span></div><div id=rows></div></div>
+<div id=main><div class=small>Loading…</div></div><div id=big><img></div><div id=status></div>
 <script>
 let S=[],cur=null,V={light:[],subject:[],extra:[]};
 const $=s=>document.querySelector(s),st=$('#status');
 async function api(p,o){const r=await fetch(p,o);return r.json()}
-function shown(){const q=$('#q').value.toLowerCase(),u=$('#untagged').checked;return S.filter(s=>(!u||!s.tags.length)&&(!q||(s.scene+' '+s.tags.join(' ')+' '+s.note+' '+s.kind).toLowerCase().includes(q)))}
-function rows(){const list=shown();$('#count').textContent=list.length+' of '+S.length;$('#rows').innerHTML=list.map(s=>`<div class="row ${cur&&cur.scene==s.scene?'sel':''}" data-s="${s.scene}"><span class="dot ${s.tags.length?'has':''}"></span><span class=n>${s.scene.replace('scene_','')}</span><span class=small>${s.pixel?'P ':''}${s.kind.toLowerCase().slice(0,5)}</span></div>`).join('');
+function shown(){const q=$('#q').value.toLowerCase(),u=$('#untagged').checked;return S.filter(s=>(!u||!s.tags.length)&&(!$('#withpix').checked||s.pixel.length)&&(!q||(s.scene+' '+s.tags.join(' ')+' '+s.note+' '+s.kind).toLowerCase().includes(q)))}
+function rows(){const list=shown();$('#count').textContent=list.length+' of '+S.length;$('#rows').innerHTML=list.map(s=>`<div class="row ${cur&&cur.scene==s.scene?'sel':''}" data-s="${s.scene}"><span class="dot ${s.tags.length?'has':''}"></span><span class=n>${s.scene.replace('scene_','')}</span><span class=small>${s.pixel.length?'P ':''}${s.kind.toLowerCase().slice(0,5)}</span></div>`).join('');
  document.querySelectorAll('.row').forEach(e=>e.onclick=()=>open(e.dataset.s))}
 function open(name){cur=S.find(s=>s.scene==name);rows();const s=cur,all=[...V.light,...V.subject,...V.extra];const extra=s.tags.filter(t=>!all.includes(t));
  const chip=t=>`<span class="chip ${s.tags.includes(t)?'on':''}" data-t="${t}">${t}</span>`;
  $('#main').innerHTML=`<h2>${s.scene}</h2><div class=small>${s.kind} · ${s.frames} frames${s.iso?' · ISO '+s.iso:''}${s.shake!=null?' · shake '+s.shake.toFixed(4)+' rad/s':''}${s.zoom?' · zoom '+(+s.zoom).toFixed(1):''}</div>
- <div class=imgs>${s.preview?`<figure><img src="/img/${s.scene}/preview.jpg"><figcaption>Holtzman preview</figcaption></figure>`:'<figure><div class=small>No preview</div></figure>'}${s.pixel?`<figure><img src="/img/${s.pixel}"><figcaption>Pixel Camera app</figcaption></figure>`:''}</div>
+ <div class=imgs>${s.preview?`<figure><img src="/img/${s.scene}/preview.jpg"><figcaption>Holtzman preview</figcaption></figure>`:'<figure><div class=small>No preview</div></figure>'}${s.pixel.map(p=>`<figure><img src="/img/${p}"><figcaption>Pixel Camera app${s.pixel.length>1?' ('+p.split('/').pop()+')':''}</figcaption></figure>`).join('')}</div>${s.pixel.length?'':'<div class=small>No Pixel photo for this scene.</div>'}
  <div class=small>Lighting</div><div class=chips>${V.light.map(chip).join('')}</div><div class=small>Subject</div><div class=chips>${V.subject.map(chip).join('')}</div>
  <div class=small>Also</div><div class=chips>${[...V.extra,...extra].map(chip).join('')}<span><input id=newtag placeholder="add a tag…" style="background:#1c1c1e;border:1px solid #333;color:#eee;border-radius:99px;padding:5px 11px"></span></div>
  <div class=small>Note</div><textarea id=note placeholder="What and where">${s.note.replace(/</g,'&lt;')}</textarea>
  <p><button id=prev>← Previous</button> <button id=next>Next →</button> <button id=copy>Copy tags from previous scene</button> <button id=clear>Clear tags</button></p>`;
+
+ document.querySelectorAll('.imgs img').forEach(i=>i.onclick=()=>{$('#big img').src=i.src+'?big';$('#big').style.display='flex'});
  document.querySelectorAll('.chip').forEach(e=>e.onclick=()=>{const t=e.dataset.t;s.tags=s.tags.includes(t)?s.tags.filter(x=>x!=t):[...s.tags,t];push()});
  $('#newtag').onkeydown=e=>{if(e.key=='Enter'&&e.target.value.trim()){const t=e.target.value.trim();if(!s.tags.includes(t))s.tags.push(t);push()}e.stopPropagation()};
  let timer;$('#note').oninput=e=>{s.note=e.target.value;clearTimeout(timer);timer=setTimeout(()=>push(true),500)};$('#note').onkeydown=e=>e.stopPropagation();
@@ -130,8 +140,9 @@ async function push(keepFocus){const s=cur;st.textContent='saving…';const r=aw
  if(r.ok){s.tags=r.tags;st.textContent='saved';setTimeout(()=>st.textContent='',900)}else st.textContent='NOT saved: '+r.error;
  if(keepFocus){rows();return}const y=$('#main').scrollTop;open(s.scene);$('#main').scrollTop=y}
 function step(d){const l=shown(),i=l.findIndex(x=>cur&&x.scene==cur.scene);const n=l[Math.max(0,Math.min(l.length-1,i+d))];if(n)open(n.scene)}
-document.onkeydown=e=>{if(e.key=='j'||e.key=='ArrowDown'||e.key=='ArrowRight')step(1);else if(e.key=='k'||e.key=='ArrowUp'||e.key=='ArrowLeft')step(-1);else if(e.key=='n'){e.preventDefault();$('#note')&&$('#note').focus()}else if(e.key=='/'){e.preventDefault();$('#newtag')&&$('#newtag').focus()}}
-$('#q').oninput=rows;$('#untagged').onchange=rows;
+$('#big').onclick=()=>$('#big').style.display='none';
+document.onkeydown=e=>{if(e.key=='Escape')$('#big').style.display='none';if(e.key=='j'||e.key=='ArrowDown'||e.key=='ArrowRight')step(1);else if(e.key=='k'||e.key=='ArrowUp'||e.key=='ArrowLeft')step(-1);else if(e.key=='n'){e.preventDefault();$('#note')&&$('#note').focus()}else if(e.key=='/'){e.preventDefault();$('#newtag')&&$('#newtag').focus()}}
+$('#q').oninput=rows;$('#untagged').onchange=rows;$('#withpix').onchange=rows;
 (async()=>{const d=await api('/api/scenes');S=d.scenes;V=d.vocab;rows();const f=S.find(s=>!s.tags.length)||S[0];if(f)open(f.scene)})();
 </script>'''
 
@@ -154,7 +165,7 @@ class H(BaseHTTPRequestHandler):
                 rel = os.path.normpath(p[5:])
                 full = os.path.abspath(os.path.join(ROOT, rel))
                 if not full.startswith(ROOT + os.sep) or not os.path.isfile(full) or not full.lower().endswith('.jpg'): return self.send(404, 'no')
-                return self.send(200, thumb(rel), 'image/jpeg')
+                return self.send(200, thumb(rel, 2400 if 'big' in urlparse(self.path).query else 900), 'image/jpeg')
             self.send(404, 'no')
         except Exception as e:
             self.send(500, json.dumps({'error': str(e)}))
