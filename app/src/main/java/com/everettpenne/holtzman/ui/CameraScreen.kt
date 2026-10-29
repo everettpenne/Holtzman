@@ -142,8 +142,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var countdown by remember { mutableIntStateOf(0) }
     var zoomRange by remember { mutableStateOf(1f..1f) }
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
-    var surfaceReady by remember { mutableStateOf<SurfaceHolder?>(null) }
-    var surfaceDims by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // the viewfinder is a TextureView: the frames can be read back (histogram, focus peaking) and filtered (the looks' colours, live)
+    var previewTexture by remember { mutableStateOf<android.graphics.SurfaceTexture?>(null) }
+    var previewView by remember { mutableStateOf<android.view.TextureView?>(null) }
+    val previewSurface = remember(previewTexture) { previewTexture?.let { android.view.Surface(it) } }
+    DisposableEffect(previewSurface) { onDispose { previewSurface?.release() } }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     // Bursts captured whose pictures are not yet saved. The shutter frees as soon as the six frames are in memory; the merge, denoise, render and save
@@ -180,17 +183,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(surfaceReady, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
-        if (surfaceReady == null || !resumed) { controller.close(); return@LaunchedEffect }
-        previewShape?.let { shape ->
-            val holder = surfaceReady ?: return@let
-            if (surfaceDims != shape.width to shape.height) {
-                // changing a SurfaceView's buffer size replaces its Surface a moment later; a camera opened on the old one fails as "unconfigured". Wait for the new size.
-                holder.setFixedSize(shape.width, shape.height)
-                kotlinx.coroutines.withTimeoutOrNull(1500) { snapshotFlow { surfaceDims }.first { it == shape.width to shape.height } }
-            }
-        }
-        val surface = surfaceReady?.surface ?: run { controller.close(); return@LaunchedEffect }
+    LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
+        val surface = previewSurface
+        if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
+        // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
+        previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
         controller.open(lens, surface, raw || hdr || computational || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational || dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
@@ -330,16 +327,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
         val ratio = previewShape?.let { it.height.toFloat() / it.width } ?: (3f / 4f)
-        // One SurfaceView for every pipeline (the normal one and the vendor extensions both deliver an upright preview), never recreated when the
-        // mode changes: a new view would destroy the surface the camera is about to be given.
+        // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
+        // surface the camera is about to be given.
         run {
             AndroidView(
-                factory = { c -> SurfaceView(c).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(h: SurfaceHolder) { surfaceReady = h }
-                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) { surfaceDims = w to hh }
-                        override fun surfaceDestroyed(h: SurfaceHolder) { surfaceReady = null }
-                    })
+                factory = { c -> android.view.TextureView(c).apply {
+                    surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) { previewTexture = st }
+                        override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+                        override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean { previewTexture = null; return true }
+                        override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
+                    }
+                    previewView = this
                 } },
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio),
             )
