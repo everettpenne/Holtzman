@@ -131,6 +131,7 @@ fun PhotoSettingsSheet(
     flash: FlashMode, onFlash: (FlashMode) -> Unit, flashAvailable: Boolean,
     grid: Boolean, onGrid: (Boolean) -> Unit,
     level: Boolean, onLevel: (Boolean) -> Unit, histogram: Boolean, onHistogram: (Boolean) -> Unit,
+    longCapture: Boolean, onLongCapture: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     GlassSheet(onDismiss) {
@@ -151,6 +152,12 @@ fun PhotoSettingsSheet(
                     FlashMode.entries.forEach { f -> GlassChip(f == flash, { onFlash(f) }) { Text(f.label, maxLines = 1, softWrap = false, modifier = Modifier.padding(horizontal = 8.dp)) } }
                 }
             }
+            GlassSectionHeader("Low light")
+            Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(!longCapture, { onLongCapture(false) }) { Text("Standard", modifier = Modifier.padding(horizontal = 8.dp)) }
+                GlassChip(longCapture, { onLongCapture(true) }) { Text("Longer capture", modifier = Modifier.padding(horizontal = 8.dp)) }
+            }
+            Text("Longer capture takes up to a few seconds in the dark, when the phone is steady, for less noise.", style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
             GlassSectionHeader("Guides")
             Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GlassChip(!grid, { onGrid(false) }) { Text("No grid", modifier = Modifier.padding(horizontal = 8.dp)) }

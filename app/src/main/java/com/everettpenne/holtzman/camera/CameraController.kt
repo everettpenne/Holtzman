@@ -54,7 +54,7 @@ enum class Lens { BACK, FRONT }
  * The still stream is the largest 4:3 JPEG the camera offers. Preview and still share the shape, so the frame on screen is the frame saved.
  */
 class CameraController(private val context: Context) {
-    companion object { const val TAG = "HoltzmanCamera"; const val BURST_FRAMES = 6 }
+    companion object { const val TAG = "HoltzmanCamera"; const val BURST_FRAMES = 6; /** The most shake (rad/s) the long capture is allowed: a held phone is about 0.01 to 0.03, a phone on a support under 0.003. */ const val LONG_CAPTURE_MAX_SHAKE = 0.012f }
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("holtzman-camera").also { it.start() }
@@ -600,13 +600,14 @@ class CameraController(private val context: Context) {
      * reads them, so the unmapping comes after anything [onFrame] queued there (the default runs it at once).
      */
     fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null, fixed: AutoSample? = null, offHeap: Boolean = false,
-                     onFrame: ((Int, java.nio.ByteBuffer, Int, Int) -> Unit)? = null, release: ((Runnable) -> Unit)? = null) {
+                     onFrame: ((Int, java.nio.ByteBuffer, Int, Int) -> Unit)? = null, release: ((Runnable) -> Unit)? = null,
+                     /** In dim light, with the phone steady: more frames, each exposed longer at a lower ISO (see below). [onPlan] hears how many frames and how many seconds the capture will take. */
+                     longCapture: Boolean = false, onPlan: ((Int, Float) -> Unit)? = null) {
         val camera = device ?: return onError("The camera is not open.")
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
         val auto = fixed ?: autoSample ?: return onError("Wait a moment for the exposure to settle.")
         Log.i(TAG, "burst focus: preview had ${auto.focusDiopters} diopters, AF state ${auto.afState}; shake %.4f rad/s".format(java.util.Locale.ROOT, shake.rate))
-        val n = frames
         // a fixed ISO is for calibration: the exposure time moves the other way so the picture is as bright as automatic exposure chose
         var useIso = iso ?: auto.iso
         var useNs = if (iso == null) auto.exposureNs else (auto.exposureNs.toDouble() * auto.iso / iso).toLong()
@@ -620,6 +621,22 @@ class CameraController(private val context: Context) {
         }
         val isoRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
         val nsRange = characteristics?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        // The longer low-light capture. Automatic exposure keeps each frame short (a quarter of a second would blur a handheld picture and freeze the
+        // viewfinder), so in dim light every frame is a noisy, high-ISO one. With the phone steady, the same light can be gathered in fewer, longer frames at a
+        // lower ISO (less read noise per photon) and there are twice as many of them: up to 8x the exposure time, at most a quarter of a second, 12 frames.
+        var count = frames
+        if (longCapture && iso == null && fixed == null && !manualExposure && shake.rate < LONG_CAPTURE_MAX_SHAKE && (useIso >= 200 || com.everettpenne.holtzman.save.DebugFlags.on("longtest"))) {   // longtest: for trying it in a bright room
+
+            val minIso = isoRange?.lower ?: 50
+            val k = if (com.everettpenne.holtzman.save.DebugFlags.on("longtest")) 4.0 else minOf(8.0, 250_000_000.0 / useNs, useIso.toDouble() / minIso)   // longtest: a bright room, only to try the 12-frame path
+            if (k > 1.3) {
+                Log.i(TAG, "long capture: exposure %d to %d us, ISO %d to %d, 12 frames".format(java.util.Locale.ROOT, useNs / 1000, (useNs * k).toLong() / 1000, useIso, Math.max(minIso, Math.round(useIso / k).toInt())))
+                useNs = (useNs * k).toLong(); useIso = Math.max(minIso, Math.round(useIso / k).toInt()); count = 12
+            }
+        }
+        if (longCapture && count == frames) Log.i(TAG, "long capture not used: shake %.4f rad/s (limit %.3f), ISO %d, manual exposure %b".format(java.util.Locale.ROOT, shake.rate, LONG_CAPTURE_MAX_SHAKE, useIso, manualExposure))
+        val n = count
+        onPlan?.invoke(n, n * useNs / 1e9f)
         if (iso != null && (isoRange?.contains(iso) != true || nsRange?.contains(useNs) != true)) return onError("ISO $iso needs an exposure of ${useNs / 1000} us, outside what this sensor allows.")
         try {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {

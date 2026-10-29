@@ -124,6 +124,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val warmthEff = if (kotlin.math.abs(warmthValue) < 1.5f) 0f else warmthValue
     var cropRatio by remember { mutableStateOf(PhotoRatio.entries.getOrElse(prefs.getInt("ratio", 0)) { PhotoRatio.FULL }) }
     var showPhotoSettings by remember { mutableStateOf(false) }
+    var longCapture by remember { mutableStateOf(prefs.getBoolean("longCapture", false)) }
+    LaunchedEffect(longCapture) { prefs.edit().putBoolean("longCapture", longCapture).apply() }
     var levelOn by remember { mutableStateOf(prefs.getBoolean("level", false)) }
     var histogramOn by remember { mutableStateOf(prefs.getBoolean("histogram", false)) }
     LaunchedEffect(levelOn, histogramOn) { prefs.edit().putBoolean("level", levelOn).putBoolean("histogram", histogramOn).apply() }
@@ -228,8 +230,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val prep = com.everettpenne.holtzman.save.BurstPrep()
         val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
-        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
-            stamp("all 6 frames in memory")
+        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, longCapture = longCapture, onPlan = { n, seconds -> if (n > 6) scope.launch(Dispatchers.Main) { status = "Low light: hold still for %.0f s".format(java.util.Locale.ROOT, seconds + 1f) } }, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
+            stamp("all frames in memory")
             scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
             scope.launch(burstQueue) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
@@ -494,7 +496,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     if (showPhotoSettings) PhotoSettingsSheet(
         ratio = cropRatio, onRatio = { cropRatio = it }, ratioApplies = computational && rawAvailable,
         timer = timer, onTimer = { timer = it }, flash = flash, onFlash = { flash = it }, flashAvailable = flashAvailable,
-        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, onDismiss = { showPhotoSettings = false })
+        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, longCapture = longCapture, onLongCapture = { longCapture = it }, onDismiss = { showPhotoSettings = false })
     if (showSettings) SettingsSheet(
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
