@@ -110,12 +110,14 @@ fun clampZoom(ratio: Float, min: Float, max: Float): Float = if (ratio.isNaN()) 
 
 /**
  * The zoom shortcuts worth offering for a camera whose range is [min]..[max]: the widest it goes when that is below 1x (the Pixel 10a's logical
- * camera reaches 0.56x, its ultrawide lens; a fixed 0.5x would be out of range), then 1x and 2x when it can.
+ * camera reaches 0.56x, its ultrawide lens; a fixed 0.5x would be out of range), then 1x, 2x, 4x and 8x when it can.
  */
 fun zoomStops(min: Float, max: Float): List<Float> = buildList {
     if (min < 0.95f) add(min)
     add(1f)
     if (2f <= max) add(2f)
+    if (4f <= max) add(4f)   // beyond 2x it is a digital zoom, as on the iPhone, which offers .5 1 2 4 8
+    if (8f <= max) add(8f)
 }
 
 /** The flash settings a person chooses between. */

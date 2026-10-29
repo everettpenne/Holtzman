@@ -80,7 +80,7 @@ class CameraSpecTest {
 
     @Test fun zoomIsClampedAndStopsFollowTheRange() {
         assertEquals(0.5f, clampZoom(0.1f, 0.5f, 8f)); assertEquals(8f, clampZoom(20f, 0.5f, 8f)); assertEquals(2.5f, clampZoom(2.5f, 0.5f, 8f)); assertEquals(1f, clampZoom(Float.NaN, 1f, 8f))
-        assertEquals(listOf(0.5556f, 1f, 2f), zoomStops(0.5556f, 8f)); assertEquals(listOf(1f, 2f), zoomStops(1f, 8f)); assertEquals(listOf(1f), zoomStops(1f, 1.5f)); assertEquals(listOf(1f, 2f), zoomStops(0.97f, 10f))
+        assertEquals(listOf(0.5556f, 1f, 2f, 4f, 8f), zoomStops(0.5556f, 8f)); assertEquals(listOf(1f, 2f, 4f, 8f), zoomStops(1f, 8f)); assertEquals(listOf(1f), zoomStops(1f, 1.5f)); assertEquals(listOf(1f, 2f, 4f, 8f), zoomStops(0.97f, 10f)); assertEquals(listOf(1f, 2f), zoomStops(1f, 3f))
     }
 
     @Test fun flashAndTimerCycleAndFlashModesMapToAeModes() {

@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -59,15 +62,15 @@ fun StylesCard(
     textureStyle: TextureStyle, onTextureStyle: (TextureStyle) -> Unit, textureAmount: Float, onTextureAmount: (Float) -> Unit,
     thumb: Bitmap?, onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    startOnTexture: Boolean = false,
 ) {
-    var customise by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf(0) }
+    var customise by remember { mutableStateOf(startOnTexture) }
+    var tab by remember { mutableStateOf(if (startOnTexture) 1 else 0) }
     CardFrame(modifier) {
         if (!customise) {
             CardHeader(onBack, center = { CardTitle(style.label + if (textureStyle != TextureStyle.STANDARD) " + ${textureStyle.label}" else "") })
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LookPreset.entries.forEach { p -> StyleCard(p, p == style, intensity, tone, thumb) { onStyle(p) } }
-            }
+            Box(Modifier.align(Alignment.CenterHorizontally).size(4.dp).background(Color.White, CircleShape))
+            StyleCarousel(style, onStyle, intensity, tone, thumb)
             Text("CUSTOMISE", style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .9f),
                 modifier = Modifier.align(Alignment.CenterHorizontally).clip(CircleShape).clickable { customise = true; tab = 0 }.padding(horizontal = 16.dp, vertical = 8.dp))
         } else {
@@ -82,23 +85,44 @@ fun StylesCard(
                 }
             })
             if (tab == 0) {
-                Column(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PalettePad(color, tone, onPalette, Modifier.size(124.dp))
-                    Text("Tone ${signedPercent(tone)}   Color ${signedPercent(color)}", style = IosType.caption1, color = Color.White.copy(alpha = .6f))
-                    TickSlider(intensity, onIntensity, Modifier.padding(horizontal = 14.dp))
+                Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PalettePad(color, tone, onPalette, Modifier.size(98.dp))
+                    TickSlider(intensity, onIntensity, Modifier.width(220.dp))
                 }
             } else {
-                Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Top) {
                         TextureStyle.entries.forEach { t ->
-                            if (t == TextureStyle.GRAIN) Box(Modifier.padding(top = 10.dp).size(width = 1.dp, height = 36.dp).background(Color.White.copy(alpha = .25f)))
+                            if (t == TextureStyle.GRAIN) Box(Modifier.padding(top = 8.dp).size(width = 1.dp, height = 34.dp).background(Color.White.copy(alpha = .25f)))
                             TextureButton(t, t == textureStyle) { onTextureStyle(t) }
                         }
                     }
-                    TickSlider(textureAmount, onTextureAmount, Modifier.padding(horizontal = 14.dp))
-                    Text("Texture is applied after taking a photo.", style = IosType.caption1, color = Color.White.copy(alpha = .5f), modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp))
+                    TickSlider(textureAmount, onTextureAmount, Modifier.width(220.dp), min = "", max = "")
+                    Text("Texture is applied after taking a photo.", style = IosType.caption1, color = Color.White.copy(alpha = .5f))
                 }
             }
+        }
+    }
+}
+
+/** The row of style cards, the iPhone's way: the chosen one is in the middle, the row snaps to a card when you let go and that card becomes the style. */
+@Composable
+private fun StyleCarousel(style: LookPreset, onStyle: (LookPreset) -> Unit, intensity: Float, tone: Float, thumb: Bitmap?) {
+    val entries = LookPreset.entries
+    val state = androidx.compose.foundation.lazy.rememberLazyListState(initialFirstVisibleItemIndex = entries.indexOf(style).coerceAtLeast(0))
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val fling = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(state)
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        val side = (maxWidth - 58.dp) / 2
+        androidx.compose.foundation.lazy.LazyRow(state = state, flingBehavior = fling, contentPadding = PaddingValues(horizontal = side), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            itemsIndexed(entries) { i, p ->
+                StyleCard(p, p == style, intensity, tone, thumb) { onStyle(p); scope.launch { state.animateScrollToItem(i) } }
+            }
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(state) {
+        androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { moving ->
+            if (!moving) entries.getOrNull(state.firstVisibleItemIndex)?.let { if (it != style) onStyle(it) }
         }
     }
 }
@@ -117,45 +141,72 @@ private fun TextureButton(t: TextureStyle, selected: Boolean, onClick: () -> Uni
     }
 }
 
-/** One style: the live picture (or a grey card until there is one) with the style's colours on it, and its name under it. */
+/** One style: the live picture with the style's colours on it; the name is in the card's title, so the card is the picture alone. */
 @Composable
 private fun StyleCard(p: LookPreset, selected: Boolean, intensity: Float, tone: Float, thumb: Bitmap?, onClick: () -> Unit) {
     val matrix = lookMatrix(p, if (selected) intensity else 1f, if (selected) tone else 0f)
-    Column(Modifier.width(66.dp).clickable(onClick = onClick).semantics { contentDescription = "Style ${p.label}" }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Box(Modifier.size(width = 66.dp, height = 86.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF3A3A3C))
-            .border(if (selected) 2.5.dp else 0.dp, if (selected) CameraYellow else Color.Transparent, RoundedCornerShape(14.dp))) {
-            if (thumb != null) Image(thumb.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop, colorFilter = matrix?.let { ColorFilter.colorMatrix(ColorMatrix(it)) })
-        }
-        Text(p.label, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = IosType.caption2.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, lineHeight = 12.sp), color = if (selected) CameraYellow else Color.White.copy(alpha = .85f), modifier = Modifier.heightIn(min = 26.dp))
+    Box(Modifier.size(width = 58.dp, height = if (selected) 82.dp else 74.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF3A3A3C)).clickable(onClick = onClick)
+        .border(if (selected) 2.dp else 0.dp, if (selected) CameraYellow else Color.Transparent, RoundedCornerShape(12.dp)).semantics { contentDescription = "Style ${p.label}" }) {
+        if (thumb != null) Image(thumb.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop, colorFilter = matrix?.let { ColorFilter.colorMatrix(ColorMatrix(it)) })
     }
 }
 
 /**
- * The Palette: cool on the left to warm on the right, lighter at the top to darker at the bottom, a faint grid, and a white dot you drag (or tap to move
- * it to). Double-tap returns it to the middle.
+ * The Palette: a dark square of small dots with a colour glow (cool and teal on the left, warm and amber on the right, lighter toward the top), and a white dot
+ * you drag, or tap to move it to. Across is Color, up and down is Tone. Double-tap returns it to the middle.
  */
 @Composable
 fun PalettePad(color: Float, tone: Float, onChange: (Float, Float) -> Unit, modifier: Modifier = Modifier) {
-    Box(modifier.clip(RoundedCornerShape(20.dp)).semantics { contentDescription = "Palette: color and tone" }
+    Box(modifier.clip(RoundedCornerShape(14.dp)).semantics { contentDescription = "Palette: color and tone" }
         .pointerInput(Unit) { detectTapGestures(onDoubleTap = { onChange(0f, 0f) }, onTap = { p -> onChange((p.x / size.width * 2f - 1f).coerceIn(-1f, 1f), -(p.y / size.height * 2f - 1f).coerceIn(-1f, 1f)) }) }
         .pointerInput(Unit) { detectDragGestures(onDragStart = { p -> onChange((p.x / size.width * 2f - 1f).coerceIn(-1f, 1f), -(p.y / size.height * 2f - 1f).coerceIn(-1f, 1f)) }) { change, _ ->
             change.consume(); val p = change.position; onChange((p.x / size.width * 2f - 1f).coerceIn(-1f, 1f), -(p.y / size.height * 2f - 1f).coerceIn(-1f, 1f)) } }) {
         Canvas(Modifier.matchParentSize()) {
-            drawRect(Brush.horizontalGradient(listOf(Color(0xFF4E86E8), Color(0xFF8E9399), Color(0xFFF2AE4A))))
-            drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = .5f), Color.Transparent, Color.Black.copy(alpha = .5f))))
-            val line = Color.White.copy(alpha = .22f)
-            for (k in 1..3) {
-                drawLine(line, Offset(size.width * k / 4f, 0f), Offset(size.width * k / 4f, size.height), 1.5f)
-                drawLine(line, Offset(0f, size.height * k / 4f), Offset(size.width, size.height * k / 4f), 1.5f)
-            }
+            drawRect(Color(0xFF17181B))
+            drawRect(Brush.horizontalGradient(listOf(Color(0xFF2F7FB0).copy(alpha = .75f), Color(0x002F7FB0), Color(0x00E58A2E), Color(0xFFE58A2E).copy(alpha = .8f))))
+            drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = .22f), Color.Transparent, Color.Black.copy(alpha = .5f))))
+            val n = 9
+            for (i in 0 until n) for (j in 0 until n) drawCircle(Color.White.copy(alpha = .3f), 1.1.dp.toPx(), Offset((i + 0.5f) / n * size.width, (j + 0.5f) / n * size.height))
             val c = Offset((color + 1f) / 2f * size.width, (1f - tone) / 2f * size.height)
-            drawCircle(Color.Black.copy(alpha = .25f), 15.dp.toPx(), c)
-            drawCircle(Color.White, 12.dp.toPx(), c)
-            drawCircle(Color.Black.copy(alpha = .35f), 12.dp.toPx(), c, style = Stroke(1.5f))
+            drawCircle(Color.Black.copy(alpha = .3f), 9.dp.toPx(), c)
+            drawCircle(Color.White, 7.dp.toPx(), c)
         }
-        Text("Warm", style = IosType.caption2, color = Color.White.copy(alpha = .8f), modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp))
-        Text("Cool", style = IosType.caption2, color = Color.White.copy(alpha = .8f), modifier = Modifier.align(Alignment.CenterStart).padding(start = 6.dp))
-        Text("Lighter", style = IosType.caption2, color = Color.White.copy(alpha = .8f), modifier = Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
-        Text("Darker", style = IosType.caption2, color = Color.White.copy(alpha = .8f), modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp))
+    }
+}
+
+/**
+ * "Choose a Style", the iPhone's full-screen first step (Settings > Camera > Photographic Styles): a close button, the title and a line of help, then a
+ * two-by-two of pictures in the style on show, which you swipe through; the style's name under it, a blue "Customise Texture" and a grey "Keep ...".
+ * The four pictures are the four corners of the live viewfinder, enlarged, standing in for the four faces the iPhone shows.
+ */
+@Composable
+fun ChooseStyleScreen(style: LookPreset, onStyle: (LookPreset) -> Unit, intensity: Float, thumb: Bitmap?, onClose: () -> Unit, onCustomiseTexture: () -> Unit, modifier: Modifier = Modifier) {
+    val entries = LookPreset.entries
+    val pager = androidx.compose.foundation.pager.rememberPagerState(initialPage = entries.indexOf(style).coerceAtLeast(0), pageCount = { entries.size })
+    androidx.compose.runtime.LaunchedEffect(pager) { androidx.compose.runtime.snapshotFlow { pager.settledPage }.collect { onStyle(entries[it]) } }
+    val shown = entries[pager.currentPage]
+    Column(modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.fillMaxWidth()) {
+            Box(Modifier.size(42.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)).clickable(onClick = onClose).semantics { contentDescription = "Close" }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Close, null, tint = Color.White) }
+        }
+        Text("Choose a Style", style = IosType.title3.copy(fontWeight = FontWeight.SemiBold), color = Color.White, modifier = Modifier.padding(top = 4.dp))
+        Text("Swipe to select a Photographic Style, or customise the colour, tone and texture.", style = IosType.callout, color = Color.White.copy(alpha = .65f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 6.dp, bottom = 14.dp))
+        androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth(), pageSpacing = 12.dp) { page ->
+            val matrix = lookMatrix(entries[page], if (entries[page] == style) intensity else 1f)
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (row in 0..1) Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (col in 0..1) Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(10.dp)).background(Color(0xFF2C2C2E))) {
+                        if (thumb != null) Image(thumb.asImageBitmap(), null, Modifier.matchParentSize().graphicsLayer { scaleX = 2f; scaleY = 2f; transformOrigin = androidx.compose.ui.graphics.TransformOrigin(col.toFloat(), row.toFloat()) },
+                            contentScale = ContentScale.Crop, colorFilter = matrix?.let { ColorFilter.colorMatrix(ColorMatrix(it)) })
+                    }
+                }
+            }
+        }
+        Text(shown.label.uppercase(), style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .9f), modifier = Modifier.padding(top = 12.dp))
+        Box(Modifier.padding(top = 4.dp, bottom = 12.dp).size(4.dp).background(Color.White, CircleShape))
+        Text("Customise Texture", style = IosType.body.copy(fontWeight = FontWeight.SemiBold), color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().clip(CircleShape).background(Color(0xFF0A84FF)).clickable(onClick = onCustomiseTexture).padding(vertical = 15.dp))
+        Text("Keep “${shown.label}”", style = IosType.body.copy(fontWeight = FontWeight.SemiBold), color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(top = 10.dp).fillMaxWidth().clip(CircleShape).background(Color.White.copy(alpha = .16f)).clickable(onClick = onClose).padding(vertical = 15.dp))
     }
 }

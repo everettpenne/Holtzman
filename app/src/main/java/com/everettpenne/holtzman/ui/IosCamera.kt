@@ -96,21 +96,37 @@ fun SixDots(modifier: Modifier = Modifier, color: Color = Color.White) {
     }
 }
 
-/** The controls as the iPhone shows them: a sheet with a handle over a grid of three round buttons across, each with its name in capitals under it. */
+/** The dots-in-a-grid glyph of Photographic Styles: a five-by-five lattice of small dots with a ringed one in the middle. */
 @Composable
-fun ControlsSheet(items: List<StripItem>, icons: Map<StripItem, ImageVector>, on: Set<StripItem>, changed: Set<StripItem>, onItem: (StripItem) -> Unit, modifier: Modifier = Modifier) {
-    CardFrame(modifier) {
-        Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp, bottom = 10.dp).size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .35f), CircleShape))
-        Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+fun DotGridGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(28.dp)) {
+        val n = 5; val step = size.width / (n + 0.4f)
+        for (i in 0 until n) for (j in 0 until n) {
+            val c = Offset(step * (i + 0.7f), step * (j + 0.7f))
+            if (i == 2 && j == 2) { drawCircle(color, 2.6.dp.toPx(), c); drawCircle(color, 5.dp.toPx(), c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.2.dp.toPx())) }
+            else drawCircle(color.copy(alpha = .8f), 1.1.dp.toPx(), c)
+        }
+    }
+}
+
+/**
+ * The controls as the iPhone shows them: a sheet the width of the screen, rounded only at the top and running to the bottom edge, with a handle over a grid of
+ * three round buttons across, each with its name in capitals under it. [tile] draws what is inside a button.
+ */
+@Composable
+fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<StripItem>, onItem: (StripItem) -> Unit, modifier: Modifier = Modifier, tile: @Composable (StripItem, Boolean) -> Unit) {
+    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(Color(0xEB1C1C1E)).navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 16.dp)) {
+        Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 14.dp).size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .35f), CircleShape))
+        Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             items.chunked(3).forEach { row ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     row.forEach { item ->
                         Column(Modifier.width(96.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            Box(Modifier.size(62.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
-                                Icon(icons[item] ?: item.icon, null, tint = if (item in on) CameraYellow else Color.White, modifier = Modifier.size(27.dp))
+                            Box(Modifier.size(64.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
+                                tile(item, item in on)
                                 if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(11.dp).size(8.dp).background(CameraYellow, CircleShape))
                             }
-                            Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.5.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .75f))
+                            Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.6.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .75f))
                         }
                     }
                     repeat(3 - row.size) { Spacer(Modifier.width(96.dp)) }

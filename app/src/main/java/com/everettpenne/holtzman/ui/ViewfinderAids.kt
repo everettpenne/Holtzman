@@ -196,13 +196,13 @@ fun lookFilter(preset: com.everettpenne.holtzman.save.BurstRender.LookPreset, in
 
 /** A small copy of the viewfinder (96 x 128), refreshed twice a second while [enabled], for the style cards to show each style on the live picture. */
 @Composable
-fun rememberStyleThumb(view: TextureView?, enabled: Boolean): State<Bitmap?> {
+fun rememberStyleThumb(view: TextureView?, enabled: Boolean, width: Int = 96, height: Int = 128): State<Bitmap?> {
     val state = remember { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(view, enabled) {
         if (!enabled || view == null) { return@LaunchedEffect }
         while (isActive) {
             if (view.isAvailable) {
-                val b = Bitmap.createBitmap(96, 128, Bitmap.Config.ARGB_8888)
+                val b = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 if (runCatching { view.getBitmap(b) }.isSuccess) state.value = b
             }
             delay(500)
