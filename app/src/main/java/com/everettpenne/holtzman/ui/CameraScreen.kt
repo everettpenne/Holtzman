@@ -58,7 +58,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.asCoroutineDispatcher
 
 /** Where finished bursts are processed: one at a time, because the GPU context, the TPU interpreter's buffers and the heap are all sized for one. */
-private val burstQueue = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "holtzman-burst").apply { priority = Thread.NORM_PRIORITY } }.asCoroutineDispatcher()
+private val burstExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "holtzman-burst").apply { priority = Thread.NORM_PRIORITY } }
+private val burstQueue = burstExecutor.asCoroutineDispatcher()
 
 @Composable
 fun HoltzmanRoot(startInVideo: Boolean = false, onCaptured: ((android.net.Uri, String) -> Unit)? = null) = HoltzmanTheme { CameraGate(startInVideo, onCaptured) }
@@ -197,13 +198,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val chars = controller.characteristics
         val processor = BurstProcessor(saver, context.applicationContext)
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
-        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onResult = { frames ->
+        // each frame is uploaded to the GPU and scored on the processing thread as it arrives, so the merge starts with that already done
+        val prep = com.everettpenne.holtzman.save.BurstPrep()
+        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
             stamp("all 6 frames in memory")
             scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
             scope.launch(burstQueue) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
                 val tShot = System.currentTimeMillis()
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr) }
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr, prep = prep) }.also { prep.close() }
                 if (context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("keepRaw", false) || com.everettpenne.holtzman.save.DebugFlags.on("keepraw")) {
                     runCatching {
                         val name = com.everettpenne.holtzman.camera.captureBaseName(tShot, java.util.TimeZone.getDefault().getOffset(tShot).toLong())
@@ -218,7 +221,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
-        }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } }) }
+        }, onError = { burstExecutor.execute { prep.close() }; scope.launch(Dispatchers.Main) { busy = false; status = it } }) }
     }
 
     // Calibration for the burst merge's noise model: two frames at each of several ISOs, same brightness, phone held still on a still scene

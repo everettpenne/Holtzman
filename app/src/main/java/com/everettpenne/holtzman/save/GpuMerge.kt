@@ -25,7 +25,7 @@ class GpuMerge(private val gl: GlContext) {
      * Merges [frames] (tight mosaics, native-endian 16-bit samples, [width] x [height]) around [reference]. Same contract as IxBurst.merge. The frames are
      * read in place from their direct buffers.
      */
-    fun merge(frames: List<ByteBuffer>, width: Int, height: Int, reference: Int, black: IntArray, params: IxMergeParams, denoise: Float = 0f): IxMerged {
+    fun merge(frames: List<ByteBuffer>, width: Int, height: Int, reference: Int, black: IntArray, params: IxMergeParams, denoise: Float = 0f, uploaded: List<Int>? = null): IxMerged {
         require(frames.size >= 1 && reference in frames.indices && width % 2 == 0 && height % 2 == 0) { "bad merge input" }
         val t0 = System.nanoTime()
         val cw = width / 2; val ch = height / 2
@@ -36,7 +36,10 @@ class GpuMerge(private val gl: GlContext) {
         val owned = ArrayList<Int>()
         fun buf(bytes: Int, data: ByteBuffer? = null): Int = gl.buffer(bytes, data).also { owned += it }
         try {
-            val raws = frames.map { buf(width * height * 2, it) }
+            val tU = System.nanoTime()
+            // frames [uploaded] while they were still being captured (BurstPrep) are used as they are, and deleted with the rest when the merge is done
+            val raws = if (uploaded != null && uploaded.size == frames.size) uploaded.also { owned += it } else frames.map { buf(width * height * 2, it) }
+            params.log("uploading ${frames.size} frames took ${(System.nanoTime() - tU) / 1_000_000} ms")
             val refL1 = buf(cw * ch * 4); val refL2 = buf(w2 * h2 * 4); val refL3 = buf(w3 * h3 * 4)
             val altL1 = buf(cw * ch * 4); val altL2 = buf(w2 * h2 * 4); val altL3 = buf(w3 * h3 * 4)
             val flow = buf(tilesX * tilesY * 8)

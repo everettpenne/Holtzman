@@ -27,25 +27,32 @@ class BurstOutcome(val jpeg: Uri, val dng: Uri?, val referenceJpeg: Uri?, val re
  * frame on its own.
  */
 class BurstProcessor(private val saver: PhotoSaver, private val context: android.content.Context? = null) {
-    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false): BurstOutcome {
+    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null): BurstOutcome {
         val started = System.nanoTime()
         run {
             val planes = frames.map { f ->
                 f.pixels.rewind()
                 IxPlane(f.pixels.order(ByteOrder.nativeOrder()).asShortBuffer(), f.width, f.height)
             }
-            val ref = IxBurst.sharpest(planes)
+            val tS = System.nanoTime()
+            // frames already on the GPU and scored while the burst was captured (BurstPrep), when that all worked
+            val ready = prep?.takeIf { it.usable(frames.size) }
+            if (prep != null && ready == null) prep.close()
+            val ref = ready?.reference() ?: IxBurst.sharpest(planes)
+            Log.i("HoltzmanTiming", "choosing the reference frame took ${(System.nanoTime() - tS) / 1_000_000} ms")
             val black = blackLevels(frames[ref].result, characteristics)
             Log.i("HoltzmanBurst", "reference $ref, black ${black.toList()}, iso ${frames[ref].result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY)}")
             val baseParams = com.everettpenne.ix.mergeParamsForIso(frames[ref].result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 860) { Log.i("HoltzmanBurst", it) }
             val params = if (DebugFlags.on("oldweights")) com.everettpenne.ix.IxMergeParams(baseParams.shot, baseParams.read, 0f, 3f, log = baseParams.log) else baseParams
             if (DebugFlags.raw.isNotEmpty()) Log.i("HoltzmanBurst", "debug switches: ${DebugFlags.raw}")
             // one GL context for the merge and the render; if the device has none, both stages run on the CPU
-            val gl = runCatching { GlContext() }.onFailure { Log.w("HoltzmanBurst", "no GPU context, using the CPU: $it") }.getOrNull()
+            val tG = System.nanoTime()
+            val gl = ready?.gl ?: runCatching { GlContext() }.onFailure { Log.w("HoltzmanBurst", "no GPU context, using the CPU: $it") }.getOrNull()
+            Log.i("HoltzmanTiming", "GL context took ${(System.nanoTime() - tG) / 1_000_000} ms")
             try {
             // the learned denoiser on the TPU, when the app carries a model and the phone has the driver; otherwise the classical denoise runs inside the merge
             val tpu = if (DebugFlags.on("notpu")) null else context?.let { com.everettpenne.holtzman.ml.TpuDenoiser.shared(it) }
-            val mergedRaw: IxMerged = mergeBest(gl, frames, planes, ref, black, params, classicalDenoise = tpu == null)
+            val mergedRaw: IxMerged = mergeBest(gl, frames, planes, ref, black, params, classicalDenoise = tpu == null, ready = ready)
             val merged: IxMerged = if (tpu == null) mergedRaw else try {
                 val t = System.nanoTime()
                 val white = frames[ref].result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
@@ -94,10 +101,19 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
      * The merge on the GPU when there is one, else on the CPU. While the GPU path is new, [VERIFY_GPU] (off by default; it costs a second merge) also runs the CPU merge on the same frames
      * and logs how far apart the two come out.
      */
-    private fun mergeBest(gl: GlContext?, frames: List<BurstFrame>, planes: List<IxPlane>, ref: Int, black: IntArray, params: com.everettpenne.ix.IxMergeParams, classicalDenoise: Boolean): IxMerged {
+    private fun mergeBest(gl: GlContext?, frames: List<BurstFrame>, planes: List<IxPlane>, ref: Int, black: IntArray, params: com.everettpenne.ix.IxMergeParams, classicalDenoise: Boolean, ready: BurstPrep? = null): IxMerged {
         if (gl != null) {
             try {
-                val gpu = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU || DebugFlags.on("noraw") || !classicalDenoise) 0f else RAW_DENOISE)
+                val tP = System.nanoTime(); val engine = ready?.engine ?: GpuMerge(gl)
+                Log.i("HoltzmanTiming", "merge shaders took ${(System.nanoTime() - tP) / 1_000_000} ms")
+                val gpu = engine.merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (VERIFY_GPU || DebugFlags.on("noraw") || !classicalDenoise) 0f else RAW_DENOISE, uploaded = ready?.uploaded)
+                if (ready != null && DebugFlags.on("checkprep")) {
+                    // debug: the same merge again with the frames uploaded the ordinary way; it must come out sample for sample the same
+                    val plain = GpuMerge(gl).merge(frames.map { it.pixels }, frames[ref].width, frames[ref].height, ref, black, params, denoise = if (DebugFlags.on("noraw") || !classicalDenoise) 0f else RAW_DENOISE)
+                    var differ = 0; var worst = 0
+                    for (i in plain.samples.indices) { val d = Math.abs((plain.samples[i].toInt() and 0xFFFF) - (gpu.samples[i].toInt() and 0xFFFF)); if (d != 0) { differ++; if (d > worst) worst = d } }
+                    Log.i("HoltzmanTiming", "prep check: merge from frames uploaded during capture vs uploaded afterwards: $differ of ${plain.samples.size} samples differ, largest $worst, same reference ${plain.meanFrames == gpu.meanFrames}")
+                }
                 if (VERIFY_GPU) {
                     val t = System.nanoTime()
                     val cpu = IxBurst.merge(planes, ref, black, com.everettpenne.ix.IxMergeParams(params.shot, params.read, params.fullTrust, params.noTrust, params.tileCells, params.searchCells))
@@ -133,7 +149,9 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
      */
     private fun renderBoth(gl: GlContext?, merged: ShortArray, ref: ShortArray?, w: Int, h: Int, s: com.everettpenne.ix.IxRenderSettings, exposure: Float, face: IntArray?): Pair<android.graphics.Bitmap, android.graphics.Bitmap?> {
         try {
+            val tR = System.nanoTime()
             GpuRender(gl ?: error("no GPU context"), ownsContext = false).use { gpu ->
+                Log.i("HoltzmanTiming", "render shaders took ${(System.nanoTime() - tR) / 1_000_000} ms")
                 val t0 = System.nanoTime()
                 val a = gpu.toBitmap(merged, w, h, s, exposure, face)
                 val t1 = System.nanoTime()

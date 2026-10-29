@@ -230,20 +230,28 @@ public object IxBurst {
     /** Index of the frame with the most local contrast (the sharpest, least shaken): the best reference. Samples every 4th row and column. */
     public fun sharpest(frames: List<IxPlane>): Int {
         require(frames.isNotEmpty()) { "no frames" }
+        return sharpestOf(frames.map { sharpness(it) })
+    }
+
+    /** The index of the largest score, the first of equals: [sharpest]'s rule, for callers that score frames one at a time as they arrive. */
+    public fun sharpestOf(scores: List<Long>): Int {
         var best = 0; var bestScore = -1L
-        for ((i, f) in frames.withIndex()) {
-            var score = 0L
-            val a = ShortArray(f.width); val up = ShortArray(f.width)
-            var y = 4
-            while (y < f.height - 2) {
-                f.readRows(y, 1, a); f.readRows(y - 2, 1, up)
-                var x = 2
-                while (x < f.width - 2) { val v = a[x].toInt() and 0xFFFF; score += abs(v - (a[x - 2].toInt() and 0xFFFF)) + abs(v - (up[x].toInt() and 0xFFFF)); x += 4 }
-                y += 4
-            }
-            if (score > bestScore) { bestScore = score; best = i }
-        }
+        for ((i, score) in scores.withIndex()) if (score > bestScore) { bestScore = score; best = i }
         return best
+    }
+
+    /** How much local contrast one frame has (a higher score is sharper and less shaken). Samples every 4th row and column. */
+    public fun sharpness(f: IxPlane): Long {
+        var score = 0L
+        val a = ShortArray(f.width); val up = ShortArray(f.width)
+        var y = 4
+        while (y < f.height - 2) {
+            f.readRows(y, 1, a); f.readRows(y - 2, 1, up)
+            var x = 2
+            while (x < f.width - 2) { val v = a[x].toInt() and 0xFFFF; score += abs(v - (a[x - 2].toInt() and 0xFFFF)) + abs(v - (up[x].toInt() and 0xFFFF)); x += 4 }
+            y += 4
+        }
+        return score
     }
 
     /** Mean and standard deviation of a patch of a RAW frame (for tests and for reporting how much a merge helped). */

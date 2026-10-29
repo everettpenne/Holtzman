@@ -509,7 +509,13 @@ class CameraController(private val context: Context) {
      * (a merge needs equal frames). Each frame comes with its result (exposure, gains, lens-shading map, black levels). [onResult] gets the frames and
      * their results in order, on the camera thread; the caller owns the images and must close them all.
      */
-    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null, fixed: AutoSample? = null, offHeap: Boolean = false) {
+    /**
+     * [onFrame] is told of each frame (its index, pixels and size) the moment it is in memory, on the camera thread: hand the work to another thread, and
+     * read the pixels only until the frames are freed. [release] runs the code that unmaps a failed burst's off-heap frames: give it the thread that
+     * reads them, so the unmapping comes after anything [onFrame] queued there (the default runs it at once).
+     */
+    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null, fixed: AutoSample? = null, offHeap: Boolean = false,
+                     onFrame: ((Int, java.nio.ByteBuffer, Int, Int) -> Unit)? = null, release: ((Runnable) -> Unit)? = null) {
         val camera = device ?: return onError("The camera is not open.")
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
@@ -551,8 +557,10 @@ class CameraController(private val context: Context) {
             val images = ArrayList<java.nio.ByteBuffer>(n); val owners = ArrayList<android.os.SharedMemory?>(n); val results = ArrayList<TotalCaptureResult>(n); val dims = intArrayOf(0, 0)
             var delivered = false
             fun freeAll() {
-                for (i in images.indices) owners.getOrNull(i)?.let { shm -> runCatching { android.os.SharedMemory.unmap(images[i]) }; shm.close() }
+                val mapped = images.toList(); val shms = owners.toList()
                 images.clear(); owners.clear(); results.clear()
+                val unmap = Runnable { for (i in mapped.indices) shms.getOrNull(i)?.let { shm -> runCatching { android.os.SharedMemory.unmap(mapped[i]) }; shm.close() } }
+                if (release != null) release(unmap) else unmap.run()
             }
             fun check() {
                 if (delivered || images.size < n || results.size < n) return
@@ -579,7 +587,7 @@ class CameraController(private val context: Context) {
                     for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src); src.clear() }
                     tight.rewind()
                     img.close()
-                    synchronized(images) { dims[0] = w; dims[1] = h; images += tight; owners += shm; check() }
+                    synchronized(images) { dims[0] = w; dims[1] = h; images += tight; owners += shm; onFrame?.invoke(images.size - 1, tight, w, h); check() }
                 }
             } catch (t: Throwable) {
                 // an allocation failure here would otherwise end the whole app on the camera thread: report it as a failed burst instead
