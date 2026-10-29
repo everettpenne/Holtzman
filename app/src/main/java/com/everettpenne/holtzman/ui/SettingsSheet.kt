@@ -29,7 +29,7 @@ import kotlinx.coroutines.withContext
 fun SettingsSheet(
     computational: Boolean, onComputational: (Boolean) -> Unit,
     hdr: Boolean, onHdr: (Boolean) -> Unit,
-    raw: Boolean, rawAvailable: Boolean, onRaw: (Boolean) -> Unit,
+    raw: Boolean, onRaw: (Boolean) -> Unit,
     datasetOn: Boolean, datasetKind: String, datasetSaved: Int, onDataset: () -> Unit,
     onReport: () -> Unit, onCompare: () -> Unit, onDismiss: () -> Unit,
 ) {
@@ -49,7 +49,8 @@ fun SettingsSheet(
                 GlassRowDivider()
                 SwitchRow("Ultra HDR", "Keeps highlight detail on HDR screens", hdr) { onHdr(it) }
                 GlassRowDivider()
-                SwitchRow("Save RAW (DNG)", if (rawAvailable || raw) "Also keeps the merged RAW file" else "This lens has no RAW", raw, enabled = rawAvailable || raw) { onRaw(it) }
+                // the camera only opens a RAW stream while one of the three switches wants it, so "no RAW stream open" is not "no RAW on this lens": always allow the switch
+                SwitchRow("Save RAW (DNG)", "Also keeps the merged RAW file", raw) { onRaw(it) }
             }
 
             GlassSectionHeader("Tools")

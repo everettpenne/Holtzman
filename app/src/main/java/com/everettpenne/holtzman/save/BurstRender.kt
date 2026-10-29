@@ -15,7 +15,7 @@ import com.everettpenne.ix.IxShadingMap
  */
 object BurstRender {
     /** The finishing look, tuned against the Pixel camera app's output of the same scenes (docs/ix-pipeline.md). */
-    val LOOK = com.everettpenne.ix.IxLook(blackPoint = 0.04f, contrast = 0.4f, saturation = 1.08f, sharpen = 1.8f, sharpenCore = 1.5f,
+    val LOOK = com.everettpenne.ix.IxLook(blackPoint = 0.04f, contrast = 0.4f, saturation = 0.9f, sharpen = 1.8f, sharpenCore = 1.5f,
         denoise = 0.7f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f, localTone = 0.35f, grain = 1.2f,
         autoTone = 1f,
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)

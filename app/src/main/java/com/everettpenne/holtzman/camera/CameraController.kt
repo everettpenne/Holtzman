@@ -34,7 +34,13 @@ class StillResult(
  * One frame of a burst, copied out of the camera's buffer at once (so the camera is not kept waiting for buffers: it holds only a handful, fewer than
  * a burst has frames). The pixels are tight rows of 16-bit samples in a direct (off-heap) buffer; [result] has the exposure, gains and shading map.
  */
-class BurstFrame(val pixels: java.nio.ByteBuffer, val width: Int, val height: Int, val result: TotalCaptureResult)
+class BurstFrame(val pixels: java.nio.ByteBuffer, val width: Int, val height: Int, val result: TotalCaptureResult, private val owner: android.os.SharedMemory? = null) {
+    /**
+     * Gives the frame's pixels back now, if they live in shared memory (a burst captured with `offHeap`). Those 24 MB buffers are outside the app's Java
+     * heap, so a second burst can be captured while the first is still being processed; nothing may read [pixels] afterwards (it would crash the app).
+     */
+    fun free() { owner?.let { runCatching { android.os.SharedMemory.unmap(pixels) }; it.close() } }
+}
 
 /** One RAW frame and the metadata DngCreator needs to describe it. Call [close] when done: it owns the camera's buffer. */
 class RawCapture(val image: Image, val result: TotalCaptureResult) { fun close() = image.close() }
@@ -495,7 +501,7 @@ class CameraController(private val context: Context) {
      * (a merge needs equal frames). Each frame comes with its result (exposure, gains, lens-shading map, black levels). [onResult] gets the frames and
      * their results in order, on the camera thread; the caller owns the images and must close them all.
      */
-    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null, fixed: AutoSample? = null) {
+    fun captureBurst(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, frames: Int = BURST_FRAMES, iso: Int? = null, fixed: AutoSample? = null, offHeap: Boolean = false) {
         val camera = device ?: return onError("The camera is not open.")
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
@@ -534,41 +540,49 @@ class CameraController(private val context: Context) {
                 faceDetectMode()?.let { set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, it) }
             }
             val requests = List(n) { builder.build() }
-            val images = ArrayList<java.nio.ByteBuffer>(n); val results = ArrayList<TotalCaptureResult>(n); val dims = intArrayOf(0, 0)
+            val images = ArrayList<java.nio.ByteBuffer>(n); val owners = ArrayList<android.os.SharedMemory?>(n); val results = ArrayList<TotalCaptureResult>(n); val dims = intArrayOf(0, 0)
             var delivered = false
+            fun freeAll() {
+                for (i in images.indices) owners.getOrNull(i)?.let { shm -> runCatching { android.os.SharedMemory.unmap(images[i]) }; shm.close() }
+                images.clear(); owners.clear(); results.clear()
+            }
             fun check() {
                 if (delivered || images.size < n || results.size < n) return
                 delivered = true
-                val burst = List(n) { BurstFrame(images[it], dims[0], dims[1], results[it]) }
+                val burst = List(n) { BurstFrame(images[it], dims[0], dims[1], results[it], owners[it]) }
                 // The listener and the capture callback outlive this call, and they hold these lists: left full they keep the whole burst (six 24 MB
                 // buffers that count against the app's heap) alive until the next burst replaces them, so two bursts in a row needed twice the memory
                 // and the second one ran the app out of it.
-                images.clear(); results.clear()
+                images.clear(); owners.clear(); results.clear()
                 raws.setOnImageAvailableListener(null, null)
                 onResult(burst)
             }
+            val tReq = android.os.SystemClock.elapsedRealtime(); var firstLogged = false
             raws.setOnImageAvailableListener({ r ->
+                if (!firstLogged) { firstLogged = true; Log.i("HoltzmanTiming", "first RAW frame ${android.os.SystemClock.elapsedRealtime() - tReq} ms after the burst request (exposure ${useNs / 1000} us, ISO $useIso)") }
                 try { r.acquireNextImage()?.let { img ->
                     // copy the rows out (dropping the stride padding) and hand the camera its buffer back straight away
                     val plane = img.planes[0]
                     val w = img.width; val h = img.height
-                    val tight = java.nio.ByteBuffer.allocateDirect(w * h * 2).order(java.nio.ByteOrder.nativeOrder())
+                    // off the Java heap when the caller will free the frames itself (see BurstFrame.free), else an ordinary direct buffer
+                    val shm = if (offHeap) android.os.SharedMemory.create("holtzman-frame", w * h * 2) else null
+                    val tight = (shm?.mapReadWrite() ?: java.nio.ByteBuffer.allocateDirect(w * h * 2)).order(java.nio.ByteOrder.nativeOrder())
                     val src = plane.buffer
                     for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src); src.clear() }
                     tight.rewind()
                     img.close()
-                    synchronized(images) { dims[0] = w; dims[1] = h; images += tight; check() }
+                    synchronized(images) { dims[0] = w; dims[1] = h; images += tight; owners += shm; check() }
                 }
             } catch (t: Throwable) {
                 // an allocation failure here would otherwise end the whole app on the camera thread: report it as a failed burst instead
                 Log.w(TAG, "burst frame could not be kept", t)
-                synchronized(images) { if (!delivered) { delivered = true; images.clear(); results.clear(); onError("Out of memory keeping the burst's frames.") } }
+                synchronized(images) { if (!delivered) { delivered = true; freeAll(); onError("Out of memory keeping the burst's frames.") } }
             }
             }, handler)
             s.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) { synchronized(images) { results += result; check() } }
                 override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
-                    synchronized(images) { if (!delivered) { delivered = true; images.clear(); onError("A burst frame failed (reason ${failure.reason}).") } }
+                    synchronized(images) { if (!delivered) { delivered = true; freeAll(); onError("A burst frame failed (reason ${failure.reason}).") } }
                 }
             }, handler)
         } catch (e: Exception) { Log.w(TAG, "burst failed", e); onError("The burst failed: ${e.message}") }

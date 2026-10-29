@@ -55,6 +55,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+
+/** Where finished bursts are processed: one at a time, because the GPU context, the TPU interpreter's buffers and the heap are all sized for one. */
+private val burstQueue = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "holtzman-burst").apply { priority = Thread.NORM_PRIORITY } }.asCoroutineDispatcher()
 
 @Composable
 fun HoltzmanRoot(startInVideo: Boolean = false, onCaptured: ((android.net.Uri, String) -> Unit)? = null) = HoltzmanTheme { CameraGate(startInVideo, onCaptured) }
@@ -121,6 +125,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var surfaceDims by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // Bursts captured whose pictures are not yet saved. The shutter frees as soon as the six frames are in memory; the merge, denoise, render and save
+    // (about two seconds) run behind it, one burst at a time. Each burst holds six 24 MB buffers against the app's 512 MB heap, so at most two are alive
+    // at once (one being processed, one being captured); with two waiting the shutter stays dim until the first is saved.
+    var pending by remember { mutableStateOf(0) }
+    val shutterBusy = busy || pending >= 2
     var last by remember { mutableStateOf<Saved?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
@@ -180,13 +189,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
 
     fun shootBurst() {
-        if (busy) return
+        if (shutterBusy) return
         busy = true; status = "Hold still…"
+        val tTap = android.os.SystemClock.elapsedRealtime()   // the shot's clock: every stage below logs its offset from the tap (tag HoltzmanTiming)
+        fun stamp(what: String) = android.util.Log.i("HoltzmanTiming", "%5d ms  %s".format(android.os.SystemClock.elapsedRealtime() - tTap, what))
+        stamp("tap")
         val chars = controller.characteristics
         val processor = BurstProcessor(saver, context.applicationContext)
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
-        controller.focusForShot { controller.captureBurst(onResult = { frames ->
-            scope.launch(Dispatchers.Default) {
+        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onResult = { frames ->
+            stamp("all 6 frames in memory")
+            scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
+            scope.launch(burstQueue) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
                 val tShot = System.currentTimeMillis()
                 val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr) }
@@ -197,8 +211,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                         com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).saveTakenBurst(frames, name, orientation, tShot, processing)
                     }.onFailure { android.util.Log.w("HoltzmanBurst", "could not keep the raw burst", it) }
                 }
+                frames.forEach { it.free() }   // the processing is finished with the pixels: out of memory before the next burst needs it
+                stamp("processed and saved")
                 withContext(Dispatchers.Main) {
-                    busy = false
+                    pending--
                     outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
@@ -224,7 +240,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     }
 
     fun shootDataset() {
-        if (busy) return
+        if (busy || pending > 0) return
         busy = true; status = "Starting…"
         val chars = controller.characteristics
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
@@ -242,8 +258,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
 
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
-        if (dataset) { shootDataset(); return }
+        if (dataset) { if (pending == 0) shootDataset(); return }
         if (computational && controller.rawAvailable) { shootBurst(); return }
+        if (pending > 0) return
         busy = true
         if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
@@ -283,7 +300,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             shoot()
         }
     }
-    LaunchedEffect(Unit) { ShutterKeys.flow.collect { if (!busy) trigger() } }
+    LaunchedEffect(Unit) { ShutterKeys.flow.collect { if (!shutterBusy) trigger() } }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
@@ -390,9 +407,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
             }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f)) }
             // the whole 84 dp circle is the button: the tap area is set before the ring's padding, so it does not shrink while recording
-            Box(Modifier.size(84.dp).clip(CircleShape).clickable(enabled = !busy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
+            Box(Modifier.size(84.dp).clip(CircleShape).clickable(enabled = !shutterBusy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
                 .border(4.dp, Color.White, CircleShape).padding(if (recording) 22.dp else 7.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
-                .background(if (videoMode) Holtzman.red else if (busy) Holtzman.accent.copy(alpha = .5f) else Color.White))
+                .background(if (videoMode) Holtzman.red else if (shutterBusy) Holtzman.accent.copy(alpha = .5f) else Color.White))
             Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White.copy(alpha = .12f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK },
                 contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
         }
@@ -400,7 +417,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     if (showSettings) SettingsSheet(
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
-        raw = raw, rawAvailable = rawAvailable, onRaw = { raw = it },
+        raw = raw, onRaw = { raw = it },
         datasetOn = dataset, datasetKind = datasetKind.label, datasetSaved = datasetSaved,
         onDataset = { showSettings = false; showDataset = true },
         onReport = { showSettings = false; showReport = true },

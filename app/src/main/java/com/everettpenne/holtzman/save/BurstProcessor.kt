@@ -58,6 +58,7 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             }
             Log.i("HoltzmanBurst", "merge done in ${(System.nanoTime() - started) / 1_000_000} ms")
             val base = captureBaseName(timeMillis, TimeZone.getDefault().getOffset(timeMillis).toLong())
+            val tDng = System.nanoTime()
             val mergedDng = if (saveDng) saver.writeDng("$base.dng", timeMillis) { out -> writeMerged(out, characteristics, frames[ref], merged, orientation) } else null
             val refDng = if (saveReference) saver.writeDng("${base}_ref.dng", timeMillis) { out ->
                 frames[ref].pixels.rewind()
@@ -66,6 +67,7 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
                     it.writeByteBuffer(out, Size(frames[ref].width, frames[ref].height), frames[ref].pixels, 0)
                 }
             } else null
+            if (saveDng) Log.i("HoltzmanTiming", "merged DNG written in ${(System.nanoTime() - tDng) / 1_000_000} ms")
             // stage 3: render the merged picture (and, when asked, the unmerged reference frame the same way, so the two can be compared fairly)
             val settings = BurstRender.settings(frames[ref].result, characteristics, black)
             val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
@@ -74,7 +76,10 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
             val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
             val hdrAttached = ultraHdr && UltraHdr.attachGainmap(mergedBitmap, merged.samples, merged.width, merged.height, frames[ref].result, characteristics)
+            Log.i("HoltzmanTiming", "rendered in ${(System.nanoTime() - tRender) / 1_000_000} ms (merge started ${(tRender - started) / 1_000_000} ms before)")
+            val tJpeg = System.nanoTime()
             val mergedJpeg = saver.writeJpeg("$base.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
+            Log.i("HoltzmanTiming", "JPEG written in ${(System.nanoTime() - tJpeg) / 1_000_000} ms")
             if (ultraHdr) Log.i("HoltzmanBurst", "Ultra HDR gain map ${if (hdrAttached) "attached" else "not attached"}; the saved file ${if (saver.hasGainmap(mergedJpeg)) "carries it" else "does not carry it"}")
             val refJpeg = refBitmap?.let { bmp -> saver.writeJpeg("${base}_ref.jpg", timeMillis, bmp, 95, orientation).also { bmp.recycle() } }
             Log.i("HoltzmanBurst", "rendered ${if (refRaw != null) "two pictures" else "the picture"} in ${(System.nanoTime() - tRender) / 1_000_000} ms, exposure x$exposure, wb ${settings.wb.toList()}, shading ${settings.shading != null}")

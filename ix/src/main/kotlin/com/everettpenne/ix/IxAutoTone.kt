@@ -4,17 +4,18 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * A tone curve chosen per picture. Photographs from the Pixel camera app, taken of different scenes, land on nearly the same brightness anchors
- * whatever the scene (median luma about 87 of 255, 95th percentile about 188, 99th about 206, the darkest percent near black): the app normalises
- * each picture to a target distribution. This does the same: it reads where the picture's own brightness ranks fall, and bends a curve so those
+ * A tone curve chosen per picture. Photographs from the Pixel camera app land near the same brightness anchors on the whole (the medians over 68
+ * pairs: luma 102 of 255 at the middle, 200 at the 95th percentile, 219 at the 99th, the darkest percent near 8), though not exactly: the middle
+ * moves between 87 and 131 (quartiles) from scene to scene, lower in contrasty scenes. An earlier version of these targets came from two
+ * pictures (87, 188, 206) and left every picture about a quarter too dark in the middle. This does the same as the Pixel app, to the medians: it reads where the picture's own brightness ranks fall, and bends a curve so those
  * ranks land on the targets, blended with the identity by [strength] and limited in slope so a flat or very contrasty scene is not stretched into
  * banding or noise.
  */
 public object IxAutoTone {
     /** Fractions of the picture's pixels at or below a brightness. */
     public val RANKS: FloatArray = floatArrayOf(0f, 0.01f, 0.05f, 0.25f, 0.5f, 0.95f, 0.99f, 1f)
-    /** The display brightness (0..1) each rank is taken to, from two Pixel camera app pictures of different scenes. */
-    public val TARGETS: FloatArray = floatArrayOf(0f, 4f, 14f, 48f, 87f, 188f, 206f, 255f).map { it / 255f }.toFloatArray()
+    /** The display brightness (0..1) each rank is taken to: the medians of the Pixel camera app's luma at those ranks over 68 same-moment pairs (2026-10-28). */
+    public val TARGETS: FloatArray = floatArrayOf(0f, 7.6f, 23.9f, 66.5f, 101.7f, 199.8f, 219.1f, 255f).map { it / 255f }.toFloatArray()
     public const val BINS: Int = 256
 
     /**
