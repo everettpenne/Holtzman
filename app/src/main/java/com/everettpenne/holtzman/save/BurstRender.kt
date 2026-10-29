@@ -44,7 +44,9 @@ object BurstRender {
      * blue, by 0.6% of the red and blue gains per unit.
      */
     class LookTuning(val texture: Float = 0f, val grain: Float = DEFAULT_GRAIN, val preset: LookPreset = LookPreset.STANDARD,
-                     val exposureEv: Float = 0f, val shadows: Float = 0f, val warmth: Float = 0f) {
+                     val exposureEv: Float = 0f, val shadows: Float = 0f, val warmth: Float = 0f,
+                     /** The ISO and/or shutter were set by hand: the picture keeps the brightness they gave instead of being brought to the usual one. */
+                     val manualExposure: Boolean = false) {
         /** The white balance shift as a multiplier of the red gain (the blue gain is divided by it). */
         val warmthFactor: Float get() = 1f + 0.006f * (warmth + preset.warmth).coerceIn(-40f, 40f)
         companion object { const val DEFAULT_GRAIN = 0.2f; const val GRAIN_LEVELS = 6f }
@@ -55,7 +57,7 @@ object BurstRender {
         return com.everettpenne.ix.IxLook(l.blackPoint.let { t.preset.blackPoint ?: it }, t.preset.contrast ?: l.contrast, t.preset.saturation ?: l.saturation,
             sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
             denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
-            localTone = l.localTone, grain = (t.grain + t.preset.grain).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = l.autoTone,
+            localTone = l.localTone, grain = (t.grain + t.preset.grain).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
             exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows) / 20f).coerceIn(-1f, 1f))
     }
 
@@ -68,6 +70,9 @@ object BurstRender {
             localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone,
             exposureEv = l.exposureEv, shadows = l.shadows)
     }
+
+    /** The brightness gain for a hand-set exposure: what automatic exposure's pictures needed on average (x3.1 to x3.5 in the logs), so a picture taken at the exposure the camera would have chosen looks as usual and one stop more or less looks a stop brighter or darker. */
+    const val MANUAL_EXPOSURE_GAIN = 3.3f
 
     /** What the average of the picture is brought to, linear: lower than middle grey, as the Pixel app's pictures sit. */
     const val EXPOSURE_TARGET = 0.12f

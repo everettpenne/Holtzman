@@ -120,6 +120,34 @@ class CameraController(private val context: Context) {
     @Volatile private var warmthFactor = 1f
     @Volatile private var evSteps = 0
 
+    // Manual exposure and focus (the Pro controls). Setting only the ISO or only the shutter keeps the picture as bright as automatic exposure had it at the
+    // moment the first was set (the other is worked out), so it is "ISO priority" or "shutter priority"; both set is fully manual.
+    @Volatile private var manualIso: Int? = null
+    @Volatile private var manualNs: Long? = null
+    @Volatile private var manualFocus: Float? = null
+    private var heldAuto: AutoSample? = null
+
+    /** True while the exposure is the user's (ISO and/or shutter set): the shake-aware exposure and the brightness normalisation stand aside. */
+    val manualExposure: Boolean get() = manualIso != null || manualNs != null
+    val manualFocusOn: Boolean get() = manualFocus != null
+    val isoRange: IntRange get() = characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { it.lower..it.upper } ?: 100..3200
+    val exposureRangeNs: LongRange get() = characteristics?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { it.lower..it.upper } ?: 100_000L..250_000_000L
+    /** The nearest the lens can focus, in diopters (1 / metres); 0 when focus is fixed. */
+    val minFocusDiopters: Float get() = characteristics?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+    /** The exposure the camera is using now, from the latest preview frame (ISO, shutter in ns), for showing beside the sliders. */
+    val currentExposure: Pair<Int, Long>? get() = autoSample?.let { it.iso to it.exposureNs }
+
+    /** Sets the ISO and/or the shutter time (null leaves that one to the camera; both null is automatic exposure again). */
+    fun setManualExposure(iso: Int?, ns: Long?) {
+        val was = manualExposure
+        manualIso = iso; manualNs = ns
+        if (iso == null && ns == null) heldAuto = null else if (!was) heldAuto = autoSample
+        resend()
+    }
+
+    /** Focuses at [diopters] (0 = infinity) and holds it; null returns to continuous autofocus. */
+    fun setManualFocus(diopters: Float?) { manualFocus = diopters?.coerceIn(0f, minFocusDiopters); resend() }
+
     /** The exposure compensation range in stops that this camera offers, and its step. */
     val exposureRangeEv: ClosedFloatingPointRange<Float>
         get() { val r = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE); val st = exposureStepEv; return if (r == null) 0f..0f else (r.lower * st)..(r.upper * st) }
@@ -263,9 +291,21 @@ class CameraController(private val context: Context) {
         val b = repeatingTemplate!!
         if (extension == null || zoomSupportedInExtension) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
         if (extension == null) {
-            b.set(CaptureRequest.CONTROL_AF_MODE, if (videoQuality != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evSteps)
+            val mf = manualFocus
+            if (mf != null && videoQuality == null) { b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF); b.set(CaptureRequest.LENS_FOCUS_DISTANCE, mf) }
+            else b.set(CaptureRequest.CONTROL_AF_MODE, if (videoQuality != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            val mIso = manualIso; val mNs = manualNs
+            if ((mIso != null || mNs != null) && videoQuality == null) {
+                val base = heldAuto ?: autoSample
+                val product = (base?.exposureNs ?: 20_000_000L).toDouble() * (base?.iso ?: 400)   // brightness automatic exposure had: shutter x ISO
+                val ns = (mNs ?: (product / (mIso ?: 400)).toLong()).coerceIn(exposureRangeNs.first, exposureRangeNs.last)
+                val iso = (mIso ?: (product / ns).toInt()).coerceIn(isoRange.first, isoRange.last)
+                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, ns); b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
+            } else {
+                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evSteps)
+            }
             val g = heldGains; val tr = heldTransform; val k = warmthFactor
             if (k != 1f && g != null && tr != null) {
                 b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
@@ -310,6 +350,7 @@ class CameraController(private val context: Context) {
      * extensions choose their own focus, so this does nothing there.
      */
     fun focusAt(u: Float, v: Float) {
+        if (manualFocus != null) return   // focus is the user's
         val chars = characteristics ?: return
         val s = session ?: return
         val device = device ?: return
@@ -352,7 +393,7 @@ class CameraController(private val context: Context) {
      */
     fun focusForShot(then: () -> Unit) {
         val s = session; val device = device
-        if (s == null || device == null || extension != null || focusRegion != null) { then(); return }
+        if (s == null || device == null || extension != null || focusRegion != null || manualFocus != null) { then(); return }
         val started = android.os.SystemClock.uptimeMillis()
         // Autofocus over the whole frame prefers the far scene (more contrast to lock onto): a fresh scan still focused on the factory behind a desk of near
         // objects. So the scan is aimed at the centre of the frame, the way a tap on it would be, unless the user has chosen a spot.
@@ -569,7 +610,7 @@ class CameraController(private val context: Context) {
         // a fixed ISO is for calibration: the exposure time moves the other way so the picture is as bright as automatic exposure chose
         var useIso = iso ?: auto.iso
         var useNs = if (iso == null) auto.exposureNs else (auto.exposureNs.toDouble() * auto.iso / iso).toLong()
-        if (iso == null && fixed == null) {
+        if (iso == null && fixed == null && !manualExposure) {
             // a shaky hand in dim light: shorter, noisier frames beat blurred ones, and the merge absorbs the noise
             val limit = shakeExposureLimitNs(shake.rate, focalLengthPx())
             val isoMax = minOf(characteristics?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.upper ?: 3200, 3200)

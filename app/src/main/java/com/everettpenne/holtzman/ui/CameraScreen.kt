@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -112,6 +113,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var evValue by remember { mutableStateOf(0f) }
     var shadowsValue by remember { mutableStateOf(0f) }
     var warmthValue by remember { mutableStateOf(0f) }
+    // the Pro controls: slider positions 0..1, null = left to the camera
+    var isoT by remember { mutableStateOf<Float?>(null) }
+    var shutterT by remember { mutableStateOf<Float?>(null) }
+    var focusT by remember { mutableStateOf<Float?>(null) }
+    val manualExposureOn = isoT != null || shutterT != null
     // the sliders hold the raw position; near the middle the control reads as exactly neutral (a detent), applied here and not in the slider so a slow drag can leave it
     val evEff = if (kotlin.math.abs(evValue) < 0.12f) 0f else evValue
     val shadowsEff = if (kotlin.math.abs(shadowsValue) < 1.5f) 0f else shadowsValue
@@ -220,7 +226,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         // each frame is uploaded to the GPU and scored on the processing thread as it arrives, so the merge starts with that already done
         val prep = com.everettpenne.holtzman.save.BurstPrep()
-        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff)
+        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
         controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
             stamp("all 6 frames in memory")
@@ -370,7 +376,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         // the level line and the histogram, over the picture
         val roll by rememberRollDegrees(levelOn && !videoMode)
         val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
+        val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
         Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
+            if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
             LevelOverlay(roll, Modifier.matchParentSize())
             HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
         }
@@ -421,6 +429,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     ControlTab.LOOK -> LookChips(preset, { preset = it })
                     ControlTab.EXPOSURE -> ControlSlider(evValue, -2f..2f, "%+.1f EV".format(java.util.Locale.ROOT, evEff), Icons.Rounded.Remove, Icons.Rounded.Add, "Exposure", { evValue = it })
                     ControlTab.SHADOWS -> ControlSlider(shadowsValue, -20f..20f, "%+d".format(shadowsEff.toInt()), Icons.Rounded.DarkMode, Icons.Rounded.LightMode, "Shadows", { shadowsValue = it })
+                    ControlTab.SHUTTER -> ControlSlider(shutterT ?: 0.5f, 0f..1f, shutterT?.let { shutterLabel(shutterNsFromT(it, controller.exposureRangeNs)) } ?: controller.currentExposure?.let { shutterLabel(it.second) } ?: "Auto", Icons.Rounded.Speed, Icons.Rounded.HourglassBottom, "Shutter", { shutterT = it }, isAuto = shutterT == null, onAuto = { shutterT = null })
+                    ControlTab.ISO -> ControlSlider(isoT ?: 0.5f, 0f..1f, isoT?.let { "ISO " + isoFromT(it, controller.isoRange) } ?: controller.currentExposure?.let { "ISO " + it.first } ?: "Auto", Icons.Rounded.Remove, Icons.Rounded.Add, "ISO", { isoT = it }, isAuto = isoT == null, onAuto = { isoT = null })
+                    ControlTab.FOCUS -> ControlSlider(focusT ?: 0f, 0f..1f, focusT?.let { focusLabel(it * controller.minFocusDiopters) } ?: "Auto", Icons.Rounded.Landscape, Icons.Rounded.FilterCenterFocus, "Focus", { focusT = it }, isAuto = focusT == null, onAuto = { focusT = null })
                     ControlTab.WHITE_BALANCE -> ControlSlider(warmthValue, -20f..20f, "%+d".format(warmthEff.toInt()), Icons.Rounded.AcUnit, Icons.Rounded.WbSunny, "White balance", { warmthValue = it })
                 }
             }
@@ -461,17 +472,23 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             if (evEff != 0f) add(ControlTab.EXPOSURE)
             if (shadowsEff != 0f) add(ControlTab.SHADOWS)
             if (warmthEff != 0f) add(ControlTab.WHITE_BALANCE)
+            if (shutterT != null) add(ControlTab.SHUTTER)
+            if (isoT != null) add(ControlTab.ISO)
+            if (focusT != null) add(ControlTab.FOCUS)
         }
         if (showControls && !videoMode) Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.size(width = 56.dp, height = 20.dp).clickable { showControls = false }.semantics { contentDescription = "Close controls" }, contentAlignment = Alignment.Center) {
                 Box(Modifier.size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .5f), CircleShape))
             }
-            ControlTabs(controlTab, changed, { controlTab = it }, onReset = { preset = BurstRender.LookPreset.STANDARD; evValue = 0f; shadowsValue = 0f; warmthValue = 0f })
+            val tabs = ControlTab.entries.filter { it != ControlTab.EXPOSURE || !manualExposureOn }   // a hand-set exposure has no compensation
+            ControlTabs(controlTab.takeIf { it in tabs } ?: ControlTab.LOOK, changed, tabs, { controlTab = it }, onReset = { preset = BurstRender.LookPreset.STANDARD; evValue = 0f; shadowsValue = 0f; warmthValue = 0f; isoT = null; shutterT = null; focusT = null })
         } else Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp, start = 32.dp, end = 32.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             BottomButton(Icons.Rounded.Settings, "Photo settings", on = false) { showPhotoSettings = true }
             if (!videoMode) BottomButton(Icons.Rounded.Tune, "Controls", on = false, dot = changed.isNotEmpty()) { showControls = true } else Spacer(Modifier.size(46.dp))
         }
     }
+    LaunchedEffect(isoT, shutterT) { controller.setManualExposure(isoT?.let { isoFromT(it, controller.isoRange) }, shutterT?.let { shutterNsFromT(it, controller.exposureRangeNs) }) }
+    LaunchedEffect(focusT) { controller.setManualFocus(focusT?.let { it * controller.minFocusDiopters }) }
     LaunchedEffect(evEff) { controller.setExposureCompensation(evEff) }
     LaunchedEffect(warmthEff) { controller.setWarmth(1f + 0.006f * warmthEff) }
     if (showPhotoSettings) PhotoSettingsSheet(

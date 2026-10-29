@@ -127,3 +127,40 @@ fun HistogramView(h: Histogram?, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/**
+ * Focus peaking: the sharpest edges of the viewfinder, as a yellow mask the size of a small copy of the frame (the strongest 7% of edge strengths, and
+ * never weaker than a floor so a flat scene does not light up), refreshed about five times a second while [enabled].
+ */
+@Composable
+fun rememberPeaking(view: TextureView?, enabled: Boolean): State<Bitmap?> {
+    val state = remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(view, enabled) {
+        if (!enabled || view == null) { state.value = null; return@LaunchedEffect }
+        val w = 240; val h = 320
+        val src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * h); val luma = IntArray(w * h); val mag = IntArray(w * h)
+        while (isActive) {
+            val ok = view.isAvailable && runCatching { view.getBitmap(src) }.isSuccess
+            if (ok) state.value = withContext(Dispatchers.Default) {
+                src.getPixels(px, 0, w, 0, 0, w, h)
+                for (i in px.indices) { val p = px[i]; luma[i] = (54 * ((p shr 16) and 255) + 183 * ((p shr 8) and 255) + 19 * (p and 255)) shr 8 }
+                val hist = IntArray(1024)
+                for (y in 1 until h - 1) for (x in 1 until w - 1) {
+                    val i = y * w + x
+                    val gx = luma[i - w + 1] + 2 * luma[i + 1] + luma[i + w + 1] - luma[i - w - 1] - 2 * luma[i - 1] - luma[i + w - 1]
+                    val gy = luma[i + w - 1] + 2 * luma[i + w] + luma[i + w + 1] - luma[i - w - 1] - 2 * luma[i - w] - luma[i - w + 1]
+                    val m = (abs(gx) + abs(gy)).coerceAtMost(1023); mag[i] = m; hist[m]++
+                }
+                var above = 0; var thr = 1023
+                while (thr > 0 && above < (w * h) * 7 / 100) { above += hist[thr]; thr-- }
+                thr = thr.coerceAtLeast(60)
+                val out = IntArray(w * h)
+                for (i in out.indices) if (mag[i] > thr) out[i] = 0xE6FFD60A.toInt()
+                Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888)
+            }
+            delay(200)
+        }
+    }
+    return state
+}

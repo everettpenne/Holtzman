@@ -39,16 +39,38 @@ enum class PhotoRatio(val label: String, val longOverShort: Float) {
 
 /** The tabs of the controls panel, opened by the button at the bottom right: one slider (or the looks) each. */
 enum class ControlTab(val label: String, val icon: ImageVector) {
-    LOOK("Look", Icons.Rounded.AutoAwesome), EXPOSURE("Exposure", Icons.Rounded.Exposure), SHADOWS("Shadows", Icons.Rounded.Contrast), WHITE_BALANCE("Warmth", Icons.Rounded.WbIncandescent)
+    LOOK("Look", Icons.Rounded.AutoAwesome), EXPOSURE("Exposure", Icons.Rounded.Exposure), SHADOWS("Shadows", Icons.Rounded.Contrast), WHITE_BALANCE("Warmth", Icons.Rounded.WbIncandescent),
+    SHUTTER("Shutter", Icons.Rounded.ShutterSpeed), ISO("ISO", Icons.Rounded.Iso), FOCUS("Focus", Icons.Rounded.CenterFocusStrong)
 }
+
+private val ISO_STOPS = intArrayOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200)
+private val SHUTTER_DENOMINATORS = intArrayOf(4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500, 400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10, 8, 6, 5, 4)
+
+/** Slider position (0..1) to an ISO from the usual third-of-a-stop list, 50 to 3200 (only those the sensor offers), and the position of an ISO on that scale. */
+fun isoFromT(t: Float, range: IntRange): Int {
+    val usable = ISO_STOPS.filter { it in range }.ifEmpty { listOf(range.first) }
+    return usable[Math.round(t.coerceIn(0f, 1f) * (usable.size - 1))]
+}
+
+/** Slider position (0..1) to a shutter time in ns from the usual list, 1/4000 s at 0 to 1/4 s at 1 (only those the sensor offers). */
+fun shutterNsFromT(t: Float, range: LongRange): Long {
+    val usable = SHUTTER_DENOMINATORS.map { 1_000_000_000L / it }.filter { it in range }.ifEmpty { listOf(range.first) }
+    return usable[Math.round(t.coerceIn(0f, 1f) * (usable.size - 1))]
+}
+
+/** A shutter time as photographers write it: 1/250, or 0.3 s from a third of a second up. */
+fun shutterLabel(ns: Long): String = if (ns >= 300_000_000L) "%.1f s".format(java.util.Locale.ROOT, ns / 1e9) else "1/${Math.round(1e9 / ns)}"
+
+/** Focus distance from the lens position in diopters. */
+fun focusLabel(diopters: Float): String = if (diopters < 0.12f) "\u221E" else (1f / diopters).let { m -> if (m >= 1f) "%.1f m".format(java.util.Locale.ROOT, m) else "${Math.round(m * 100)} cm" }
 
 /** The row of tabs that replaces the PHOTO / VIDEO area while the controls panel is open; a dot marks a tab whose control is off its default. */
 @Composable
-fun ControlTabs(selected: ControlTab, changed: Set<ControlTab>, onSelect: (ControlTab) -> Unit, onReset: () -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+fun ControlTabs(selected: ControlTab, changed: Set<ControlTab>, tabs: List<ControlTab>, onSelect: (ControlTab) -> Unit, onReset: () -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
         TabButton(Icons.Rounded.RestartAlt, "Reset All", on = false, dot = false, onClick = onReset)
         Box(Modifier.padding(top = 8.dp).size(width = 1.dp, height = 40.dp).background(Color.White.copy(alpha = .25f)))
-        ControlTab.entries.forEach { t -> TabButton(t.icon, t.label, on = t == selected, dot = t in changed) { onSelect(t) } }
+        tabs.forEach { t -> TabButton(t.icon, t.label, on = t == selected, dot = t in changed) { onSelect(t) } }
     }
 }
 
@@ -65,10 +87,16 @@ private fun TabButton(icon: ImageVector, label: String, on: Boolean, dot: Boolea
 
 /** A slider on a dark pill with the value in a bubble above it, over the picture's lower edge, the way the Pixel camera app's controls sit above the shutter. */
 @Composable
-fun ControlSlider(value: Float, range: ClosedFloatingPointRange<Float>, display: String, minIcon: ImageVector, maxIcon: ImageVector, description: String, onChange: (Float) -> Unit, modifier: Modifier = Modifier) {
+fun ControlSlider(value: Float, range: ClosedFloatingPointRange<Float>, display: String, minIcon: ImageVector, maxIcon: ImageVector, description: String, onChange: (Float) -> Unit, modifier: Modifier = Modifier,
+                  /** For the controls that can be left to the camera: whether it is, and what tapping "Auto" does. */
+                  isAuto: Boolean? = null, onAuto: (() -> Unit)? = null) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(display, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.Black,
-            modifier = Modifier.clip(CircleShape).background(Holtzman.accent).padding(horizontal = 14.dp, vertical = 4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (isAuto != null) Text("Auto", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (isAuto) Color.Black else Color.White,
+                modifier = Modifier.clip(CircleShape).background(if (isAuto) Holtzman.accent else Color.Black.copy(alpha = .55f)).clickable(enabled = !isAuto) { onAuto?.invoke() }.padding(horizontal = 14.dp, vertical = 4.dp))
+            Text(display, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (isAuto == true) Color.White else Color.Black,
+                modifier = Modifier.clip(CircleShape).background(if (isAuto == true) Color.Black.copy(alpha = .55f) else Holtzman.accent).padding(horizontal = 14.dp, vertical = 4.dp))
+        }
         Row(Modifier.fillMaxWidth().clip(CircleShape).background(Color.Black.copy(alpha = .55f)).padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(minIcon, null, tint = Color.White.copy(alpha = .8f), modifier = Modifier.size(20.dp))
             GlassSlider(value, onChange, Modifier.weight(1f), valueRange = range, description = description)

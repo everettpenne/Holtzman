@@ -78,7 +78,7 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             // stage 3: render the merged picture (and, when asked, the unmerged reference frame the same way, so the two can be compared fairly)
             val settings = BurstRender.settings(frames[ref].result, characteristics, black, tuning)
             // the exposure compensation moves the brightness the picture is brought to, in linear light, as well as the tone targets: the tone curve alone cannot lift dark areas far
-            val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET * Math.pow(2.0, tuning.exposureEv.toDouble()).toFloat())
+            val exposure = if (tuning.manualExposure) BurstRender.MANUAL_EXPOSURE_GAIN else com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET * Math.pow(2.0, tuning.exposureEv.toDouble()).toFloat())
             val refRaw = if (saveReference) ShortArray(merged.width * merged.height).also { frames[ref].pixels.rewind(); frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) } else null
             val tRender = System.nanoTime()
             val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
