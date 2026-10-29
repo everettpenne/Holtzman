@@ -164,3 +164,27 @@ fun rememberPeaking(view: TextureView?, enabled: Boolean): State<Bitmap?> {
     }
     return state
 }
+
+/**
+ * The viewfinder's version of a look, as a colour matrix over the camera's own picture: saturation, a gentler or stronger contrast about mid grey, the
+ * look's own warmth, and lifted blacks. It stands in for the real thing (the saved photo goes through the whole pipeline), so it is close, not exact; null
+ * for the standard look, which needs nothing. The user's own warmth, exposure and shadows are not in it: warmth and exposure already change the camera's
+ * picture, and shadows only show in the saved photo.
+ */
+fun lookFilter(preset: com.everettpenne.holtzman.save.BurstRender.LookPreset): android.graphics.ColorMatrixColorFilter? {
+    if (preset == com.everettpenne.holtzman.save.BurstRender.LookPreset.STANDARD) return null
+    val base = com.everettpenne.holtzman.save.BurstRender.LOOK
+    val m = android.graphics.ColorMatrix()
+    m.setSaturation(((preset.saturation ?: base.saturation) / base.saturation).coerceIn(0f, 1.6f))
+    val contrast = 1f + ((preset.contrast ?: base.contrast) - base.contrast) * 0.5f
+    val k = 1f + 0.006f * preset.warmth
+    val lift = ((preset.blackPoint ?: base.blackPoint) - base.blackPoint).coerceAtLeast(0f)
+    val scale = contrast * (1f - lift)
+    val shift = 128f * (1f - contrast) * (1f - lift) + 255f * lift
+    m.postConcat(android.graphics.ColorMatrix(floatArrayOf(
+        scale * k, 0f, 0f, 0f, shift,
+        0f, scale, 0f, 0f, shift,
+        0f, 0f, scale / k, 0f, shift,
+        0f, 0f, 0f, 1f, 0f)))
+    return android.graphics.ColorMatrixColorFilter(m)
+}

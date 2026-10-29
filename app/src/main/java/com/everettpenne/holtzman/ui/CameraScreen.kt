@@ -158,6 +158,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var previewView by remember { mutableStateOf<android.view.TextureView?>(null) }
     val previewSurface = remember(previewTexture) { previewTexture?.let { android.view.Surface(it) } }
     DisposableEffect(previewSurface) { onDispose { previewSurface?.release() } }
+    // the look's colours, live on the viewfinder (an approximation: the saved photo gets the real pipeline)
+    LaunchedEffect(previewView, preset) {
+        val f = lookFilter(preset)
+        previewView?.setLayerPaint(if (f == null) null else android.graphics.Paint().apply { colorFilter = f })
+    }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     // Bursts captured whose pictures are not yet saved. The shutter frees as soon as the six frames are in memory; the merge, denoise, render and save
