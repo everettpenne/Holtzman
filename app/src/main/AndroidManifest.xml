@@ -12,6 +12,8 @@
 
     <!-- Whether Sietch is installed, to offer "Show in Sietch" (nothing else about other apps is visible to Holtzman). -->
     <queries>
+        <!-- the Pixel Camera app, for paired data collection (a photo of the same moment as a dataset series) -->
+        <package android:name="com.google.android.GoogleCamera" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="sietch" />

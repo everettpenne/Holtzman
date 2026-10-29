@@ -36,13 +36,21 @@ fun DatasetSheet(
     active: Boolean, kind: DatasetKind, onKind: (DatasetKind) -> Unit,
     tags: Set<String>, onTag: (String) -> Unit,
     note: String, onNote: (String) -> Unit, saved: Int,
+    pixelFirst: Boolean, onPixelFirst: (Boolean) -> Unit, pixelAvailable: Boolean,
     onStart: () -> Unit, onStop: () -> Unit, onCalibrate: () -> Unit, onDismiss: () -> Unit,
 ) {
     GlassSheet(onDismiss) {
         Column(Modifier.heightIn(max = 680.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
             Text("Dataset capture", style = IosType.title2, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
-            Text("Saves unprocessed RAW frames and their metadata, with a preview, to tune the camera. They go to Documents/Holtzman/Dataset.",
+            Text("Saves unprocessed RAW frames and their metadata, with a preview, to tune the camera. They go to Documents/Holtzman/Dataset. With the Pixel pairing on, each shot first opens the Pixel Camera app for one photo (take it, tap the tick), then runs the series.",
                 style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp))
+
+            GlassSectionHeader("Pair with the Pixel camera")
+            GlassGroup {
+                GlassListRow("Pixel photo first", subtitle = if (pixelAvailable) "Pixel Camera photo first, saved as a pair" else "The Pixel Camera app is not installed",
+                    onClick = if (pixelAvailable) ({ onPixelFirst(!pixelFirst) }) else null,
+                    trailing = { com.everettpenne.glass.LiquidSwitch(pixelFirst && pixelAvailable, { if (pixelAvailable) onPixelFirst(it) }) })
+            }
 
             GlassSectionHeader("What to capture")
             GlassGroup {

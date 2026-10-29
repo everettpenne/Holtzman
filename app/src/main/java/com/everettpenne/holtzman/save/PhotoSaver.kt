@@ -85,6 +85,25 @@ class PhotoSaver(private val resolver: ContentResolver) {
         return uri
     }
 
+    /**
+     * An empty file in Documents/Holtzman/[folder] for another app to write into (the Pixel Camera app, given its Uri), not pending, because a pending file is
+     * hidden from other apps. [sizeOf] says whether anything was written; [abandonDocument] removes it.
+     */
+    fun beginDocument(folder: String, name: String, mime: String, timeMillis: Long): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/Holtzman/" + folder)
+            put(MediaStore.MediaColumns.DATE_TAKEN, timeMillis)
+        }
+        return resolver.insert(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values) ?: throw java.io.IOException("The media library would not make $name.")
+    }
+
+    /** The size in bytes of the file at [uri], 0 if it is empty or cannot be read. */
+    fun sizeOf(uri: Uri): Long = runCatching { resolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L }.getOrDefault(0L)
+
+    fun abandonDocument(uri: Uri) { runCatching { resolver.delete(uri, null, null) } }
+
     private fun write(name: String, mime: String, timeMillis: Long, beforePublish: (Uri) -> Unit = {}, body: (java.io.OutputStream) -> Unit): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)

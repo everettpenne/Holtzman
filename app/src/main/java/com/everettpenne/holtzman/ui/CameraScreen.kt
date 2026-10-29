@@ -112,6 +112,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var showControls by remember { mutableStateOf(false) }
     var activeItem by remember { mutableStateOf<StripItem?>(null) }   // the control open under the viewfinder; null shows the strip
     var focusTick by remember { mutableStateOf(0) }
+    // paired data collection: take a photo in the Pixel Camera app first, then run the dataset series
+    var pixelFirst by remember { mutableStateOf(prefs.getBoolean("pixelFirst", false)) }
+    LaunchedEffect(pixelFirst) { prefs.edit().putBoolean("pixelFirst", pixelFirst).apply() }
+    var pendingPair by remember { mutableStateOf<PendingPair?>(null) }
     var showChooseStyle by remember { mutableStateOf(false) }          // the full-screen "Choose a Style"
     var startStylesOnTexture by remember { mutableStateOf(false) }      // open the Styles card on its Texture tab
     var lastThumb by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -305,22 +309,56 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         next(0)
     }
 
-    fun shootDataset() {
-        if (busy || pending > 0) return
+    // The dataset series itself. After the Pixel Camera app the camera has to open again before it can be used, so a paired capture waits until frames are flowing.
+    fun runDatasetSeries(sceneName: String?, pixelDouble: String?) {
         busy = true; status = "Starting…"
-        val chars = controller.characteristics
-        val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
-        val kind = datasetKind; val tags = datasetTags; val note = datasetNote
+        val kind = datasetKind; val tags = datasetTags; val note = datasetNote; val lensNow = lens
         scope.launch(Dispatchers.Default) {
             val outcome = runCatching {
-                com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).run(kind, tags, note, orientation) { line -> scope.launch(Dispatchers.Main) { status = line } }
+                if (sceneName != null) {
+                    scope.launch(Dispatchers.Main) { status = "Waiting for the camera…" }
+                    kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!controller.streaming) delay(100); true } ?: throw java.io.IOException("The camera did not come back after the Pixel Camera app.")
+                    delay(800)   // automatic exposure and focus settle
+                }
+                val chars = controller.characteristics
+                val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lensNow == Lens.FRONT)
+                com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).run(kind, tags, note, orientation, { line -> scope.launch(Dispatchers.Main) { status = line } }, sceneName, pixelDouble)
             }
             withContext(Dispatchers.Main) {
                 busy = false
-                outcome.onSuccess { datasetSaved++; status = "Saved ${it.removePrefix("scene_")} (${datasetSaved} this session)  ·  Files: Documents/Holtzman/Dataset" }.onFailure { status = "Dataset capture failed: ${it.message}"; android.util.Log.w("HoltzmanDataset", it) }
+                outcome.onSuccess { datasetSaved++; status = "Saved ${it.removePrefix("scene_")}${if (pixelDouble != null) " with its Pixel photo" else ""} (${datasetSaved} this session)  ·  Files: Documents/Holtzman/Dataset" }.onFailure { status = "Dataset capture failed: ${it.message}" }
             }
         }
     }
+
+    var launchPixel: (android.content.Intent) -> Unit = {}
+    fun shootDataset() {
+        if (busy || pending > 0) return
+        if (pixelFirst && com.everettpenne.holtzman.save.PixelPairing.available(context)) {
+            // the scene's name is chosen now, so the Pixel photo can carry it
+            val started = System.currentTimeMillis()
+            val scene = com.everettpenne.holtzman.save.PixelPairing.sceneName(started, datasetKind)
+            val uri = runCatching { saver.beginDocument(com.everettpenne.holtzman.save.PixelPairing.FOLDER, "$scene.jpg", "image/jpeg", started) }.getOrNull()
+            if (uri == null) { status = "Could not make a file for the Pixel photo"; return }
+            pendingPair = PendingPair(scene, uri)
+            busy = true; status = "Take the photo in the Pixel camera, then tap the tick"
+            runCatching { launchPixel(com.everettpenne.holtzman.save.PixelPairing.captureIntent(uri)) }.onFailure { saver.abandonDocument(uri); pendingPair = null; busy = false; status = "Could not open the Pixel Camera app" }
+            return
+        }
+        runDatasetSeries(null, null)
+    }
+    // what comes back from the Pixel Camera app: the photo (then the series runs) or nothing (then the empty file is removed)
+    val pixelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val p = pendingPair; pendingPair = null
+        if (p == null) { busy = false } else scope.launch(Dispatchers.IO) {
+            val size = saver.sizeOf(p.uri)
+            withContext(Dispatchers.Main) {
+                if (result.resultCode == android.app.Activity.RESULT_OK && size > 0) runDatasetSeries(p.scene, com.everettpenne.holtzman.save.PixelPairing.FOLDER.removePrefix("Dataset/") + "/" + p.scene + ".jpg")
+                else { saver.abandonDocument(p.uri); busy = false; status = "No Pixel photo, so nothing was saved" }
+            }
+        }
+    }
+    launchPixel = { pixelLauncher.launch(it) }
 
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
@@ -591,6 +629,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         active = dataset, kind = datasetKind, onKind = { datasetKind = it },
         tags = datasetTags, onTag = { t -> datasetTags = if (t in datasetTags) datasetTags - t else datasetTags + t },
         note = datasetNote, onNote = { datasetNote = it }, saved = datasetSaved,
+        pixelFirst = pixelFirst, onPixelFirst = { pixelFirst = it }, pixelAvailable = com.everettpenne.holtzman.save.PixelPairing.available(context),
         onStart = { dataset = true; showDataset = false }, onStop = { dataset = false; showDataset = false },
         onCalibrate = { showDataset = false; calibrateNoise() },
         onDismiss = { showDataset = false })
@@ -610,3 +649,6 @@ private fun TextPill(label: String, enabled: Boolean, onClick: () -> Unit) {
     Text(label, maxLines = 1, softWrap = false, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White,
         modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp))
 }
+
+/** A paired capture waiting for the Pixel Camera app: the scene's name and the file the photo is to be written to. */
+private class PendingPair(val scene: String, val uri: android.net.Uri)

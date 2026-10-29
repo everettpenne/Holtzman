@@ -114,6 +114,7 @@ class CameraController(private val context: Context) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - ringFpsSince >= 4000) { Log.i(TAG, "instant capture: %.1f frames/s into the ring, ${ring.size} kept".format(java.util.Locale.ROOT, ringFrameCount * 1000f / (now - ringFpsSince))); ringFrameCount = 0; ringFpsSince = now }
             }
+            streamFrames++
             // the automatic white balance's own answer, kept so the warmth control can start from it
             result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestGains = it }
             result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestTransform = it }
@@ -126,6 +127,9 @@ class CameraController(private val context: Context) {
     private var heldGains: android.hardware.camera2.params.RggbChannelVector? = null
     private var heldTransform: android.hardware.camera2.params.ColorSpaceTransform? = null
     @Volatile private var warmthFactor = 1f
+    @Volatile private var streamFrames = 0
+    /** True once the camera has been delivering preview frames for a moment since it was opened: it is safe to take a shot. */
+    val streaming: Boolean get() = session != null && streamFrames >= 8
     @Volatile private var evSteps = 0
 
     // ---- Instant capture (zero shutter lag). With it on, every preview frame is also a RAW frame; the newest [RING_FRAMES] are kept, and pressing the
@@ -841,7 +845,7 @@ class CameraController(private val context: Context) {
         }
         handler.removeCallbacks(afReset); repeatingTemplate = null
         generation++   // anything still opening is now stale
-        zslEnabled = false; autoRegion = null
+        zslEnabled = false; autoRegion = null; streamFrames = 0
         clearRing()
         runCatching { extensionSession?.close() }; extensionSession = null; extension = null
         runCatching { session?.close() }; session = null

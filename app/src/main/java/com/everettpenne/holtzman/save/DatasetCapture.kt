@@ -44,13 +44,13 @@ class DatasetCapture(private val controller: CameraController, private val saver
     private suspend fun focus() = suspendCancellableCoroutine<Unit> { c -> controller.focusForShot { c.resume(Unit) } }
 
     /** Runs one shot of [kind]; [progress] gets a line as it goes. Returns the scene folder's name. Call off the main thread. */
-    suspend fun run(kind: DatasetKind, tags: Set<String>, note: String, orientation: Int, progress: (String) -> Unit): String {
+    suspend fun run(kind: DatasetKind, tags: Set<String>, note: String, orientation: Int, progress: (String) -> Unit, sceneName: String? = null, pixelDouble: String? = null): String {
         val chars = controller.characteristics ?: throw IOException("The camera is not ready.")
         if (controller.autoSample == null) throw IOException("Wait a moment for the exposure to settle.")
         progress("Focusing…"); focus()
         val auto = controller.autoSample ?: throw IOException("Wait a moment for the exposure to settle.")
         val started = System.currentTimeMillis()
-        val scene = "scene_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(started)) + "_" + kind.name.lowercase()
+        val scene = sceneName ?: PixelPairing.sceneName(started, kind)   // a paired capture chose its name before the Pixel photo was taken
         val folder = "Dataset/$scene"
         val files = JSONArray()
         var written = 0
@@ -109,6 +109,8 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("startedAt", started); put("finishedAt", System.currentTimeMillis())
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}"); put("build", Build.FINGERPRINT)
             put("app", "Holtzman dataset capture 1")
+            // the Pixel Camera app's photo of the same moment, taken first, when this was a paired capture: a path under Documents/Holtzman/Dataset
+            pixelDouble?.let { put("pixelDouble", it); put("pairing", "pixel-first"); PixelPairing.version(context)?.let { v -> put("pixelCameraVersion", v) } }
             put("zoom", controller.zoom.toDouble()); put("orientationDegrees", orientation)
             put("sensorOrientation", chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: -1)
             put("thermalStatus", thermal())
