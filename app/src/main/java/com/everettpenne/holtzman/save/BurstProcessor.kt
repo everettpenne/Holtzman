@@ -27,7 +27,7 @@ class BurstOutcome(val jpeg: Uri, val dng: Uri?, val referenceJpeg: Uri?, val re
  * frame on its own.
  */
 class BurstProcessor(private val saver: PhotoSaver, private val context: android.content.Context? = null) {
-    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null, tuning: BurstRender.LookTuning = BurstRender.LookTuning()): BurstOutcome {
+    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null, tuning: BurstRender.LookTuning = BurstRender.LookTuning(), cropLongOverShort: Float? = null): BurstOutcome {
         val started = System.nanoTime()
         run {
             val planes = frames.map { f ->
@@ -77,12 +77,16 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             if (saveDng) Log.i("HoltzmanTiming", "merged DNG written in ${(System.nanoTime() - tDng) / 1_000_000} ms")
             // stage 3: render the merged picture (and, when asked, the unmerged reference frame the same way, so the two can be compared fairly)
             val settings = BurstRender.settings(frames[ref].result, characteristics, black, tuning)
-            val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
+            // the exposure compensation moves the brightness the picture is brought to, in linear light, as well as the tone targets: the tone curve alone cannot lift dark areas far
+            val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET * Math.pow(2.0, tuning.exposureEv.toDouble()).toFloat())
             val refRaw = if (saveReference) ShortArray(merged.width * merged.height).also { frames[ref].pixels.rewind(); frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) } else null
             val tRender = System.nanoTime()
             val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
-            val (mergedBitmap, refBitmap) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
-            val hdrAttached = ultraHdr && UltraHdr.attachGainmap(mergedBitmap, merged.samples, merged.width, merged.height, frames[ref].result, characteristics)
+            val (renderedBitmap, renderedRef) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
+            // a crop (the camera's Ratio setting) is cut from the rendered picture, centred; the Ultra HDR gain map is built from the whole mosaic, so a cropped picture is saved without one
+            val mergedBitmap = cropLongOverShort?.let { cropped(renderedBitmap, it) } ?: renderedBitmap
+            val refBitmap = if (cropLongOverShort != null) renderedRef?.let { cropped(it, cropLongOverShort) } else renderedRef
+            val hdrAttached = ultraHdr && cropLongOverShort == null && UltraHdr.attachGainmap(mergedBitmap, merged.samples, merged.width, merged.height, frames[ref].result, characteristics)
             Log.i("HoltzmanTiming", "rendered in ${(System.nanoTime() - tRender) / 1_000_000} ms (merge started ${(tRender - started) / 1_000_000} ms before)")
             val tJpeg = System.nanoTime()
             val mergedJpeg = saver.writeJpeg("$base.jpg", timeMillis, mergedBitmap, 95, orientation); mergedBitmap.recycle()
@@ -139,6 +143,19 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
         val region = com.everettpenne.holtzman.camera.faceRegion(face, array.width(), array.height(), 0f)
         Log.i("HoltzmanBurst", "face found: score ${face.score}, ${face.right - face.left} px wide in the active array")
         return com.everettpenne.holtzman.camera.scaleToRaw(region, array.width(), array.height(), rawW, rawH)
+    }
+
+    /** [bitmap] cut to [longOverShort] (long side over short side) about its centre, on even pixel offsets; the original is recycled. */
+    private fun cropped(bitmap: android.graphics.Bitmap, longOverShort: Float): android.graphics.Bitmap {
+        val w = bitmap.width; val h = bitmap.height
+        val landscape = w >= h; val long = if (landscape) w else h; val short = if (landscape) h else w
+        val full = long.toFloat() / short
+        var newLong = long; var newShort = short
+        if (longOverShort < full) newLong = ((short * longOverShort).toInt() and 1.inv()) else if (longOverShort > full) newShort = ((long / longOverShort).toInt() and 1.inv())
+        if (newLong == long && newShort == short) return bitmap
+        val cw = if (landscape) newLong else newShort; val ch = if (landscape) newShort else newLong
+        val x0 = ((w - cw) / 2) and 1.inv(); val y0 = ((h - ch) / 2) and 1.inv()
+        return android.graphics.Bitmap.createBitmap(bitmap, x0, y0, cw, ch).also { if (it !== bitmap) bitmap.recycle() }
     }
 
     private companion object { const val VERIFY_GPU = false; /** Tolerance of the spatial denoise of the merged mosaic, in noise deviations. */ const val RAW_DENOISE = 1.6f }

@@ -106,7 +106,40 @@ class CameraController(private val context: Context) {
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
             if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE), result.frameNumber)
             latestFaces = facesOf(result)
+            // the automatic white balance's own answer, kept so the warmth control can start from it
+            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestGains = it }
+            result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestTransform = it }
         }
+    }
+
+    @Volatile private var latestGains: android.hardware.camera2.params.RggbChannelVector? = null
+    @Volatile private var latestTransform: android.hardware.camera2.params.ColorSpaceTransform? = null
+    /** The automatic white balance's gains at the moment warmth moved off zero; held while it is off zero, so the picture does not drift under the slider. */
+    private var heldGains: android.hardware.camera2.params.RggbChannelVector? = null
+    private var heldTransform: android.hardware.camera2.params.ColorSpaceTransform? = null
+    @Volatile private var warmthFactor = 1f
+    @Volatile private var evSteps = 0
+
+    /** The exposure compensation range in stops that this camera offers, and its step. */
+    val exposureRangeEv: ClosedFloatingPointRange<Float>
+        get() { val r = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE); val st = exposureStepEv; return if (r == null) 0f..0f else (r.lower * st)..(r.upper * st) }
+    private val exposureStepEv: Float get() = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+
+    /** Brightens or darkens the live picture (and so the burst's exposures) by [ev] stops, to the nearest step the camera has; returns what it applied. */
+    fun setExposureCompensation(ev: Float): Float {
+        val st = exposureStepEv; val r = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        if (st <= 0f || r == null) return 0f
+        val steps = Math.round(ev / st).coerceIn(r.lower, r.upper)
+        if (steps != evSteps) { evSteps = steps; resend() }   // a slider moves through many values per step
+        return evSteps * st
+    }
+
+    /** Moves the live picture's white balance by [factor]: the red gain is multiplied by it and the blue divided (1 = automatic white balance again). */
+    fun setWarmth(factor: Float) {
+        warmthFactor = factor
+        if (factor == 1f) { heldGains = null; heldTransform = null }
+        else if (heldGains == null) { heldGains = latestGains; heldTransform = latestTransform }
+        resend()
     }
 
     /** Set when the camera was opened for video: the size recorded. */
@@ -232,6 +265,17 @@ class CameraController(private val context: Context) {
         if (extension == null) {
             b.set(CaptureRequest.CONTROL_AF_MODE, if (videoQuality != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evSteps)
+            val g = heldGains; val tr = heldTransform; val k = warmthFactor
+            if (k != 1f && g != null && tr != null) {
+                b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+                b.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+                b.set(CaptureRequest.COLOR_CORRECTION_GAINS, android.hardware.camera2.params.RggbChannelVector(g.red * k, g.greenEven, g.greenOdd, g.blue / k))
+                b.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, tr)
+            } else {
+                b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                b.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
+            }
             faceDetectMode()?.let { b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, it) }
             if (videoQuality != null) stabilise(b)
             val r = focusRegion

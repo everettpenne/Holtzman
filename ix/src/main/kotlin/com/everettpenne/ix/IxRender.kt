@@ -62,6 +62,10 @@ public class IxLook(
     public val grain: Float = 0f,
     /** Adaptive tone (GPU only), 0 = off: the tone curve is chosen per picture from its own brightness distribution, see [IxAutoTone]. Replaces [curve]. */
     public val autoTone: Float = 0f,
+    /** Exposure compensation in stops (adaptive tone only): the brightness the picture is brought to moves with it, see [IxAutoTone.targetsFor]. */
+    public val exposureEv: Float = 0f,
+    /** -1..1, 0 = none (adaptive tone only): darkens or lifts the shadows without moving the highlights, see [IxAutoTone.shadows]. */
+    public val shadows: Float = 0f,
 ) {
     init { require(curve == null || curve.size == CURVE_X.size) { "the curve needs ${CURVE_X.size} points" } }
 

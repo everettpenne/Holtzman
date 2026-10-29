@@ -21,19 +21,42 @@ object BurstRender {
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)
         curve = floatArrayOf(0f, 4f, 13f, 34f, 55f, 75f, 106f, 132f, 156f, 180f, 203f, 245f).map { it / 255f }.toFloatArray())
     /**
-     * The two finish controls in Settings. [texture] runs from -1 (softer) to +1 (crisper), 0 = the tuned look: it scales the fine-detail gain and the
-     * medium-scale contrast with it, and the sharpening by about half as much. [grain] is film grain from 0 (none) to 1 (heavy, [GRAIN_LEVELS] display
-     * levels of 255 at the strongest); [DEFAULT_GRAIN] is the tuned look's 1.2 levels.
+     * A named look: how it differs from the tuned standard look. Colour [saturation] and [contrast] replace the standard's (null keeps it); the rest add
+     * to what the controls say: [texture] and [grain] in their slider units, [warmth] and [shadows] in the units of the Pixel app's sliders (-20..20).
      */
-    class LookTuning(val texture: Float = 0f, val grain: Float = DEFAULT_GRAIN) {
+    enum class LookPreset(val label: String, val saturation: Float? = null, val contrast: Float? = null, val blackPoint: Float? = null,
+                          val texture: Float = 0f, val grain: Float = 0f, val warmth: Float = 0f, val shadows: Float = 0f) {
+        STANDARD("Standard"),
+        VIVID("Vivid", saturation = 1.15f, contrast = 0.55f, texture = 0.15f),
+        WARM("Warm", saturation = 0.95f, warmth = 10f, shadows = 3f),
+        COOL("Cool", saturation = 0.92f, warmth = -10f, texture = 0.1f),
+        SOFT("Soft", saturation = 0.85f, contrast = 0.25f, texture = -0.5f, shadows = 6f, grain = -0.1f),
+        FILM("Film", saturation = 0.72f, contrast = 0.3f, blackPoint = 0.07f, texture = -0.15f, grain = 0.25f, warmth = 4f),
+        MONO("Mono", saturation = 0f, contrast = 0.5f, grain = 0.15f),
+        FOOD("Food", saturation = 1.1f, contrast = 0.45f, texture = 0.25f, warmth = 6f),
+    }
+
+    /**
+     * What the camera screen's controls ask for. [texture] runs from -1 (softer) to +1 (crisper), 0 = the tuned look: it scales the fine-detail gain and
+     * the medium-scale contrast with it, and the sharpening by about half as much. [grain] is film grain from 0 (none) to 1 (heavy, [GRAIN_LEVELS] display
+     * levels of 255 at the strongest); [DEFAULT_GRAIN] is the tuned look's 1.2 levels. [exposureEv] is exposure compensation in stops. [shadows] and
+     * [warmth] are in the Pixel app's slider units (-20..20): shadows lifts or deepens the dark tones; warmth moves white balance toward red (positive) or
+     * blue, by 0.6% of the red and blue gains per unit.
+     */
+    class LookTuning(val texture: Float = 0f, val grain: Float = DEFAULT_GRAIN, val preset: LookPreset = LookPreset.STANDARD,
+                     val exposureEv: Float = 0f, val shadows: Float = 0f, val warmth: Float = 0f) {
+        /** The white balance shift as a multiplier of the red gain (the blue gain is divided by it). */
+        val warmthFactor: Float get() = 1f + 0.006f * (warmth + preset.warmth).coerceIn(-40f, 40f)
         companion object { const val DEFAULT_GRAIN = 0.2f; const val GRAIN_LEVELS = 6f }
     }
 
     private fun tuned(l: com.everettpenne.ix.IxLook, t: LookTuning): com.everettpenne.ix.IxLook {
-        val x = t.texture.coerceIn(-1f, 1f)
-        return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
+        val x = (t.texture + t.preset.texture).coerceIn(-1f, 1f)
+        return com.everettpenne.ix.IxLook(l.blackPoint.let { t.preset.blackPoint ?: it }, t.preset.contrast ?: l.contrast, t.preset.saturation ?: l.saturation,
+            sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
             denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
-            localTone = l.localTone, grain = t.grain.coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = l.autoTone)
+            localTone = l.localTone, grain = (t.grain + t.preset.grain).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = l.autoTone,
+            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows) / 20f).coerceIn(-1f, 1f))
     }
 
     /** [LOOK] with the user's [tuning], and any stages the debug switches turned off. */
@@ -42,7 +65,8 @@ object BurstRender {
         if (DebugFlags.raw.isEmpty()) return l
         return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, l.sharpen, l.sharpenCore, l.curve,
             denoise = if (DebugFlags.on("nofinish")) 0f else l.denoise, detail = l.detail, detailCore = l.detailCore, clarity = l.clarity, chromaSmoothing = l.chromaSmoothing,
-            localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone)
+            localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone,
+            exposureEv = l.exposureEv, shadows = l.shadows)
     }
 
     /** What the average of the picture is brought to, linear: lower than middle grey, as the Pixel app's pictures sit. */
@@ -57,7 +81,8 @@ object BurstRender {
         }
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) ?: chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
         val g = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
-        val wb = if (g != null) floatArrayOf(g.red, (g.greenEven + g.greenOdd) / 2f, g.blue) else floatArrayOf(1f, 1f, 1f)
+        val k = tuning.warmthFactor   // the warmth control: more red, less blue (or the reverse)
+        val wb = if (g != null) floatArrayOf(g.red * k, (g.greenEven + g.greenOdd) / 2f, g.blue / k) else floatArrayOf(k, 1f, 1f / k)
         val t = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
         val ccm = if (t != null) FloatArray(9) { i -> t.getElement(i % 3, i / 3).toFloat() } else floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
         val lsm = result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)

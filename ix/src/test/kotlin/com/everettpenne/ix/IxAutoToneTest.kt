@@ -56,4 +56,23 @@ class IxAutoToneTest {
         assertTrue("face at ${at(c, 235)}", at(c, 235) <= 0.72f * 255f + 8f)
         for (i in 1 until c.size) assertTrue("knot $i", c[i] > c[i - 1])
     }
+
+    @Test fun exposureCompensationMovesTheTargetsTheRightWayAndKeepsTheirOrder() {
+        val up = IxAutoTone.targetsFor(1f); val down = IxAutoTone.targetsFor(-1f); val base = IxAutoTone.TARGETS
+        assertEquals(0f, up.first(), 0f); assertEquals(1f, up.last(), 0f)
+        for (k in 1 until base.size - 1) { assertTrue("brighter at $k", up[k] > base[k]); assertTrue("darker at $k", down[k] < base[k]) }
+        for (t in listOf(up, down)) for (k in 1 until t.size) assertTrue("ordered at $k", t[k] >= t[k - 1])
+        assertTrue("no target reaches white", up[up.size - 2] <= 0.985f)
+        assertTrue("zero stops changes nothing", IxAutoTone.targetsFor(0f).contentEquals(base))
+    }
+
+    @Test fun shadowsLiftTheLowEndOfTheCurveAndLeaveTheTopAlone() {
+        val flat = IxLook.CURVE_X.copyOf()
+        val lifted = IxAutoTone.shadows(flat, 1f); val deepened = IxAutoTone.shadows(flat, -1f)
+        assertTrue("lifted at 48: ${at(lifted, 48)}", at(lifted, 48) > at(flat, 48) + 8f)
+        assertTrue("deepened at 48: ${at(deepened, 48)}", at(deepened, 48) < at(flat, 48) - 4f)
+        assertEquals(at(flat, 224), at(lifted, 224), 3f); assertEquals(1f, lifted.last(), 1e-6f); assertEquals(0f, lifted.first(), 0f)
+        for (c in listOf(lifted, deepened)) for (i in 1 until c.size) assertTrue("knot $i", c[i] > c[i - 1])
+        assertTrue("zero changes nothing", IxAutoTone.shadows(flat, 0f).contentEquals(flat))
+    }
 }

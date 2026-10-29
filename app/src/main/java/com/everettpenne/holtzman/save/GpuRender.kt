@@ -163,7 +163,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
                     val hist = IntArray(256).also { counts.get(it) }
                     GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
-                    var curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone)
+                    var curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone, targets = com.everettpenne.ix.IxAutoTone.targetsFor(s.look.exposureEv))
                     if (face != null && face[2] - face[0] >= 16 && face[3] - face[1] >= 16) {
                         // a face: measure its own brightness (every pixel in its box) and keep it out of the shadows and highlights
                         val faceHist = IntArray(1); GLES31.glGenBuffers(1, faceHist, 0)
@@ -187,6 +187,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                             }
                         } finally { GLES31.glDeleteBuffers(1, faceHist, 0) }
                     }
+                    curve = com.everettpenne.ix.IxAutoTone.shadows(curve, s.look.shadows)   // after the face rule: the user's choice is the last word on the shadows
                     android.util.Log.i("HoltzmanGpu", "adaptive tone curve: " + curve.joinToString(" ") { "%.0f".format(java.util.Locale.ROOT, it * 255f) })
                     GLES31.glUseProgram(curveProgram)
                     gl.setInts(curveProgram, "size", width, height)
