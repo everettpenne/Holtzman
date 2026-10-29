@@ -310,23 +310,41 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     }
 
     // The dataset series itself. After the Pixel Camera app the camera has to open again before it can be used, so a paired capture waits until frames are flowing.
-    fun runDatasetSeries(sceneName: String?, pixelDouble: String?) {
+    fun runDatasetSeries(sceneName: String?, pixelDouble: String?, pixelUri: android.net.Uri? = null) {
         busy = true; status = "Starting…"
         val kind = datasetKind; val tags = datasetTags; val note = datasetNote; val lensNow = lens
+        var pixelZoomNote: String? = null; var pixelZoomDetail: String? = null
         scope.launch(Dispatchers.Default) {
             val outcome = runCatching {
                 if (sceneName != null) {
                     scope.launch(Dispatchers.Main) { status = "Waiting for the camera…" }
                     kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!controller.streaming) delay(100); true } ?: throw java.io.IOException("The camera did not come back after the Pixel Camera app.")
                     delay(800)   // automatic exposure and focus settle
+                    // The Pixel app was left at some zoom and took its photo at it; the camera has come back at 1x. Match it, so the pair is of the same view.
+                    if (pixelUri != null) {
+                        val photo = com.everettpenne.holtzman.save.PixelPairing.readPhoto(context, pixelUri)
+                        val wide = withContext(Dispatchers.Main) { previewView?.takeIf { it.isAvailable }?.let { runCatching { it.getBitmap(320, 427) }.getOrNull() } }
+                        val range = withContext(Dispatchers.Main) { controller.zoomMin }
+                        var target: Float? = null
+                        if (photo != null && photo.focalLengthMm != null && photo.focalLengthMm < 3f && range < 0.95f) { target = range; pixelZoomNote = "ultrawide" }   // the wide lens's own focal length
+                        else if (photo != null && wide != null) {
+                            // a portrait view may meet a landscape photo (the Pixel app turns with the phone): estimateAnyTurn tries the turnings
+                            val a = com.everettpenne.holtzman.save.ZoomEstimate.estimateAnyTurn(com.everettpenne.holtzman.save.PixelPairing.lumaOf(wide), photo.luma)
+                            target = com.everettpenne.holtzman.save.ZoomEstimate.settle(a)
+                            pixelZoomDetail = "%.3f at correlation %.2f".format(java.util.Locale.ROOT, a.zoom, a.score)
+                            if (target != null) pixelZoomNote = "%.1f".format(java.util.Locale.ROOT, target)
+                        }
+                        if (target != null && kotlin.math.abs(target - 1f) > 0.04f) withContext(Dispatchers.Main) { zoom = controller.setZoom(target) }.also { delay(600) }
+                        pixelZoomNote = pixelZoomNote ?: "not measured"
+                    }
                 }
                 val chars = controller.characteristics
                 val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lensNow == Lens.FRONT)
-                com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).run(kind, tags, note, orientation, { line -> scope.launch(Dispatchers.Main) { status = line } }, sceneName, pixelDouble)
+                com.everettpenne.holtzman.save.DatasetCapture(controller, saver, context).run(kind, tags, note, orientation, { line -> scope.launch(Dispatchers.Main) { status = line } }, sceneName, pixelDouble, pixelZoomNote, pixelZoomDetail)
             }
             withContext(Dispatchers.Main) {
                 busy = false
-                outcome.onSuccess { datasetSaved++; status = "Saved ${it.removePrefix("scene_")}${if (pixelDouble != null) " with its Pixel photo" else ""} (${datasetSaved} this session)  ·  Files: Documents/Holtzman/Dataset" }.onFailure { status = "Dataset capture failed: ${it.message}" }
+                outcome.onSuccess { datasetSaved++; status = "Saved ${it.removePrefix("scene_")}${if (pixelDouble != null) " with its Pixel photo (zoom ${pixelZoomNote ?: "?"})" else ""} (${datasetSaved} this session)  ·  Files: Documents/Holtzman/Dataset" }.onFailure { status = "Dataset capture failed: ${it.message}" }
             }
         }
     }
@@ -353,7 +371,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         if (p == null) { busy = false } else scope.launch(Dispatchers.IO) {
             val size = saver.sizeOf(p.uri)
             withContext(Dispatchers.Main) {
-                if (result.resultCode == android.app.Activity.RESULT_OK && size > 0) runDatasetSeries(p.scene, com.everettpenne.holtzman.save.PixelPairing.FOLDER.removePrefix("Dataset/") + "/" + p.scene + ".jpg")
+                if (result.resultCode == android.app.Activity.RESULT_OK && size > 0) runDatasetSeries(p.scene, com.everettpenne.holtzman.save.PixelPairing.FOLDER.removePrefix("Dataset/") + "/" + p.scene + ".jpg", p.uri)
                 else { saver.abandonDocument(p.uri); busy = false; status = "No Pixel photo, so nothing was saved" }
             }
         }
