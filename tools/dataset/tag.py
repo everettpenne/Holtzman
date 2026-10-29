@@ -102,10 +102,12 @@ PAGE = r'''<!doctype html><meta charset=utf-8><title>Tag the dataset</title><met
 .row:hover{background:#1a1a1c}.row.sel{background:#2a2a2d}.row .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dot{width:8px;height:8px;border-radius:50%;background:#444;flex:none}.dot.has{background:var(--y)}
 .small{color:var(--dim);font-size:12px}
-#main{flex:1;overflow:auto;padding:16px 20px}
-h2{margin:0 0 4px;font-size:16px}.imgs{display:flex;gap:12px;margin:12px 0;flex-wrap:wrap}
-.imgs figure{margin:0;flex:1;min-width:280px}.imgs img{width:100%;border-radius:10px;background:#222;display:block;cursor:zoom-in}
-#big{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}#big img{max-width:96vw;max-height:96vh;border-radius:6px}.imgs figcaption{color:var(--dim);font-size:12px;margin-top:4px}
+#main{flex:1;overflow:auto;padding:14px 18px}
+#cols{display:flex;gap:18px;align-items:flex-start}#left{flex:0 0 min(44%,460px);position:sticky;top:0}#right{flex:1;min-width:300px}
+@media(max-width:900px){#cols{flex-direction:column}#left{position:static;flex:none;width:100%}}
+h2{margin:0 0 4px;font-size:16px}.imgs{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}
+.imgs figure{margin:0;flex:1 1 40%;min-width:0}.imgs img{width:100%;max-height:38vh;object-fit:contain;border-radius:8px;background:#000;display:block;cursor:zoom-in}
+#big{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}#big img{max-width:96vw;max-height:96vh;border-radius:6px}.imgs figcaption{color:var(--dim);font-size:12px;margin-top:4px;overflow-wrap:anywhere}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 14px}.chip{padding:5px 11px;border-radius:99px;border:1px solid #444;background:var(--panel);cursor:pointer;user-select:none}
 .chip.on{background:var(--y);color:#000;border-color:var(--y);font-weight:600}
 textarea{width:100%;min-height:70px;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:8px;font:inherit}
@@ -124,11 +126,11 @@ function rows(){const list=shown();$('#count').textContent=list.length+' of '+S.
 function open(name){cur=S.find(s=>s.scene==name);rows();const s=cur,all=[...V.light,...V.subject,...V.extra];const extra=s.tags.filter(t=>!all.includes(t));
  const chip=t=>`<span class="chip ${s.tags.includes(t)?'on':''}" data-t="${t}">${t}</span>`;
  $('#main').innerHTML=`<h2>${s.scene}</h2><div class=small>${s.kind} · ${s.frames} frames${s.iso?' · ISO '+s.iso:''}${s.shake!=null?' · shake '+s.shake.toFixed(4)+' rad/s':''}${s.zoom?' · zoom '+(+s.zoom).toFixed(1):''}</div>
- <div class=imgs>${s.preview?`<figure><img src="/img/${s.scene}/preview.jpg"><figcaption>Holtzman preview</figcaption></figure>`:'<figure><div class=small>No preview</div></figure>'}${s.pixel.map(p=>`<figure><img src="/img/${p}"><figcaption>Pixel Camera app${s.pixel.length>1?' ('+p.split('/').pop()+')':''}</figcaption></figure>`).join('')}</div>${s.pixel.length?'':'<div class=small>No Pixel photo for this scene.</div>'}
+ <div id=cols><div id=left><div class=imgs>${s.preview?`<figure><img src="/img/${s.scene}/preview.jpg"><figcaption>Holtzman preview</figcaption></figure>`:'<figure><div class=small>No preview</div></figure>'}${s.pixel.map(p=>`<figure><img src="/img/${p}"><figcaption>Pixel Camera app${s.pixel.length>1?' ('+p.split('/').pop()+')':''}</figcaption></figure>`).join('')}</div>${s.pixel.length?'':'<div class=small>No Pixel photo for this scene.</div>'}<div class=small>Click a picture to enlarge it.</div></div><div id=right>
  <div class=small>Lighting</div><div class=chips>${V.light.map(chip).join('')}</div><div class=small>Subject</div><div class=chips>${V.subject.map(chip).join('')}</div>
  <div class=small>Also</div><div class=chips>${[...V.extra,...extra].map(chip).join('')}<span><input id=newtag placeholder="add a tag…" style="background:#1c1c1e;border:1px solid #333;color:#eee;border-radius:99px;padding:5px 11px"></span></div>
  <div class=small>Note</div><textarea id=note placeholder="What and where">${s.note.replace(/</g,'&lt;')}</textarea>
- <p><button id=prev>← Previous</button> <button id=next>Next →</button> <button id=copy>Copy tags from previous scene</button> <button id=clear>Clear tags</button></p>`;
+ <p><button id=prev>← Previous</button> <button id=next>Next →</button> <button id=copy>Copy tags from previous scene</button> <button id=clear>Clear tags</button></p></div></div>`;
 
  document.querySelectorAll('.imgs img').forEach(i=>i.onclick=()=>{$('#big img').src=i.src+'?big';$('#big').style.display='flex'});
  document.querySelectorAll('.chip').forEach(e=>e.onclick=()=>{const t=e.dataset.t;s.tags=s.tags.includes(t)?s.tags.filter(x=>x!=t):[...s.tags,t];push()});
