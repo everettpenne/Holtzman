@@ -70,7 +70,7 @@ fun LevelOverlay(rollDegrees: Float?, modifier: Modifier = Modifier) {
     val roll = rollDegrees ?: return
     if (abs(roll) > 10f) return
     val level = abs(roll) < 1f
-    val color = if (level) Holtzman.accent else Color.White.copy(alpha = .85f)
+    val color = if (level) CameraYellow else Color.White.copy(alpha = .85f)
     Box(modifier) {
         Canvas(Modifier.matchParentSize()) {
             val c = center; val half = size.width * 0.18f

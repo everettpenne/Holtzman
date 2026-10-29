@@ -13,7 +13,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,48 +40,81 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.everettpenne.glass.GlassSlider
 import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.save.BurstRender.LookPreset
+import com.everettpenne.holtzman.save.BurstRender.TextureStyle
 
 /**
- * The Photographic Styles panel, after the iPhone's: a row of style cards, each showing the live picture in that style; under it the Palette, a square pad
- * where the dot's place across is Color (cool to warm) and up and down is Tone (darker to lighter), and an Intensity slider for the chosen style.
+ * The Photographic Styles card, after the iPhone's two steps. First a row of style cards (each the live picture in that style) under the name of the chosen
+ * style, and CUSTOMISE. Then PALETTE (the square pad: across is Color, cool to warm; up and down is Tone, darker to lighter; and a tick slider for how much
+ * of the style) or TEXTURE (Standard, Soft Skin, Glow, Film and Grain, and a tick slider for how much, applied when the photo is made).
  *
- * [color] and [tone] are the dot's place, -1..1 (tone up is positive). The pad is the same control as the Warmth and Shadows tabs: the screen keeps one value
- * for each, so moving one moves the other.
+ * [color] and [tone] are the dot's place, -1..1 (tone up is positive). The pad is the same control as the Warmth and Shadows values the screen keeps.
  */
 @Composable
-fun StylesPanel(
+fun StylesCard(
     style: LookPreset, onStyle: (LookPreset) -> Unit,
     intensity: Float, onIntensity: (Float) -> Unit,
     color: Float, tone: Float, onPalette: (Float, Float) -> Unit,
-    thumb: Bitmap?,
+    textureStyle: TextureStyle, onTextureStyle: (TextureStyle) -> Unit, textureAmount: Float, onTextureAmount: (Float) -> Unit,
+    thumb: Bitmap?, onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(Color.Black.copy(alpha = .66f)).padding(horizontal = 12.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            LookPreset.entries.forEach { p -> StyleCard(p, p == style, intensity, tone, thumb) { onStyle(p) } }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
-            PalettePad(color, tone, onPalette, Modifier.size(132.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Readout("Tone", tone); Readout("Color", color)
+    var customise by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf(0) }
+    CardFrame(modifier) {
+        if (!customise) {
+            CardHeader(onBack, center = { CardTitle(style.label + if (textureStyle != TextureStyle.STANDARD) " + ${textureStyle.label}" else "") })
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                LookPreset.entries.forEach { p -> StyleCard(p, p == style, intensity, tone, thumb) { onStyle(p) } }
+            }
+            Text("CUSTOMISE", style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .9f),
+                modifier = Modifier.align(Alignment.CenterHorizontally).clip(CircleShape).clickable { customise = true; tab = 0 }.padding(horizontal = 16.dp, vertical = 8.dp))
+        } else {
+            CardHeader({ customise = false }, trailing = if (tab == 1) ({
+                Icon(Icons.Rounded.RestartAlt, "Reset texture", tint = Color.White, modifier = Modifier.size(24.dp).clickable { onTextureStyle(TextureStyle.STANDARD); onTextureAmount(0.5f) })
+            }) else null, center = {
+                Row(Modifier.clip(CircleShape).background(Color.White.copy(alpha = .12f)).padding(3.dp)) {
+                    listOf("PALETTE", "TEXTURE").forEachIndexed { i, l ->
+                        Text(l, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp), color = if (i == tab) CameraYellow else Color.White.copy(alpha = .85f),
+                            modifier = Modifier.clip(CircleShape).background(if (i == tab) Color.White.copy(alpha = .2f) else Color.Transparent).clickable { tab = i }.padding(horizontal = 14.dp, vertical = 7.dp))
+                    }
                 }
-                Text("Intensity  ${Math.round(intensity * 100)}%", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White.copy(alpha = .85f), modifier = Modifier.padding(top = 4.dp))
-                GlassSlider(intensity, onIntensity, valueRange = 0f..1f, description = "Style intensity")
-                Text("Reset", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Holtzman.accent,
-                    modifier = Modifier.clip(CircleShape).clickable { onStyle(LookPreset.STANDARD); onIntensity(1f); onPalette(0f, 0f) }.padding(vertical = 6.dp, horizontal = 2.dp))
+            })
+            if (tab == 0) {
+                Column(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PalettePad(color, tone, onPalette, Modifier.size(124.dp))
+                    Text("Tone ${signedPercent(tone)}   Color ${signedPercent(color)}", style = IosType.caption1, color = Color.White.copy(alpha = .6f))
+                    TickSlider(intensity, onIntensity, Modifier.padding(horizontal = 14.dp))
+                }
+            } else {
+                Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Top) {
+                        TextureStyle.entries.forEach { t ->
+                            if (t == TextureStyle.GRAIN) Box(Modifier.padding(top = 10.dp).size(width = 1.dp, height = 36.dp).background(Color.White.copy(alpha = .25f)))
+                            TextureButton(t, t == textureStyle) { onTextureStyle(t) }
+                        }
+                    }
+                    TickSlider(textureAmount, onTextureAmount, Modifier.padding(horizontal = 14.dp))
+                    Text("Texture is applied after taking a photo.", style = IosType.caption1, color = Color.White.copy(alpha = .5f), modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp))
+                }
             }
         }
     }
 }
 
+private fun signedPercent(v: Float): String { val n = Math.round(v * 100); return if (n > 0) "+$n" else "$n" }
+
+/** One texture: a round button with its name under it; the chosen one is a white disc with a dark icon. */
 @Composable
-private fun Readout(label: String, v: Float) {
-    val n = Math.round(v * 100)
-    Text("$label ${if (n > 0) "+$n" else "$n"}", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = if (n == 0) Color.White.copy(alpha = .6f) else Holtzman.accent)
+private fun TextureButton(t: TextureStyle, selected: Boolean, onClick: () -> Unit) {
+    val icon = when (t) { TextureStyle.STANDARD -> Icons.Rounded.NotInterested; TextureStyle.SOFT_SKIN -> Icons.Rounded.Person; TextureStyle.GLOW -> Icons.Rounded.BlurOn; TextureStyle.FILM -> Icons.Rounded.Movie; TextureStyle.GRAIN -> Icons.Rounded.Grain }
+    Column(Modifier.width(62.dp).clickable(onClick = onClick).semantics { contentDescription = "Texture ${t.label}" }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(Modifier.size(50.dp).clip(CircleShape).background(if (selected) Color.White else Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = if (selected) Color.Black else Color.White, modifier = Modifier.size(24.dp))
+        }
+        Text(t.label.uppercase(), maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = IosType.caption2.copy(fontSize = 9.sp, lineHeight = 11.sp), color = Color.White.copy(alpha = if (selected) 1f else .7f), modifier = Modifier.heightIn(min = 22.dp))
+    }
 }
 
 /** One style: the live picture (or a grey card until there is one) with the style's colours on it, and its name under it. */
@@ -83,10 +123,10 @@ private fun StyleCard(p: LookPreset, selected: Boolean, intensity: Float, tone: 
     val matrix = lookMatrix(p, if (selected) intensity else 1f, if (selected) tone else 0f)
     Column(Modifier.width(66.dp).clickable(onClick = onClick).semantics { contentDescription = "Style ${p.label}" }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Box(Modifier.size(width = 66.dp, height = 86.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF3A3A3C))
-            .border(if (selected) 2.5.dp else 0.dp, if (selected) Holtzman.accent else Color.Transparent, RoundedCornerShape(14.dp))) {
+            .border(if (selected) 2.5.dp else 0.dp, if (selected) CameraYellow else Color.Transparent, RoundedCornerShape(14.dp))) {
             if (thumb != null) Image(thumb.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop, colorFilter = matrix?.let { ColorFilter.colorMatrix(ColorMatrix(it)) })
         }
-        Text(p.label, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = IosType.caption2.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, lineHeight = 12.sp), color = if (selected) Holtzman.accent else Color.White.copy(alpha = .85f), modifier = Modifier.heightIn(min = 26.dp))
+        Text(p.label, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = IosType.caption2.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, lineHeight = 12.sp), color = if (selected) CameraYellow else Color.White.copy(alpha = .85f), modifier = Modifier.heightIn(min = 26.dp))
     }
 }
 

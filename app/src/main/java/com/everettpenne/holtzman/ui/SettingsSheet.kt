@@ -33,7 +33,7 @@ fun SettingsSheet(
     hdr: Boolean, onHdr: (Boolean) -> Unit,
     raw: Boolean, onRaw: (Boolean) -> Unit,
     texture: Float, onTexture: (Float) -> Unit, grain: Float, onGrain: (Float) -> Unit,
-    datasetOn: Boolean, datasetKind: String, datasetSaved: Int, onDataset: () -> Unit,
+    datasetOn: Boolean, datasetKind: String, datasetSaved: Int, onDataset: () -> Unit, onCaptureSettings: () -> Unit, styleName: String, onStyles: () -> Unit,
     onReport: () -> Unit, onCompare: () -> Unit, onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -65,6 +65,15 @@ fun SettingsSheet(
                 val tuned = texture != 0f || kotlin.math.abs(grain - BurstRender.LookTuning.DEFAULT_GRAIN) > 0.005f
                 GlassListRow("Reset to the standard look", subtitle = "Applies to computational photos", onClick = if (tuned) ({ onTexture(0f); onGrain(BurstRender.LookTuning.DEFAULT_GRAIN) }) else null,
                     titleColor = if (tuned) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            GlassSectionHeader("Camera")
+            GlassGroup {
+                GlassListRow("Photographic Styles", subtitle = "Style, palette and texture", onClick = onStyles,
+                    trailing = { Value(styleName); Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
+                GlassRowDivider()
+                GlassListRow("Capture and guides", subtitle = "Instant capture, low light, grid, level, histogram", onClick = onCaptureSettings,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
             }
 
             GlassSectionHeader("Tools")

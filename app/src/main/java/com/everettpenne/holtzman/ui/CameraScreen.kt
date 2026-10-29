@@ -15,6 +15,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
@@ -108,12 +110,19 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // the controls panel (bottom right, as in the Pixel camera app): a look, exposure compensation in stops, shadows and warmth in the Pixel app's -20..20 units.
     // They are for the next shots and start from neutral each time the app opens; the crop is kept.
     var showControls by remember { mutableStateOf(false) }
-    var controlTab by remember { mutableStateOf(ControlTab.LOOK) }
-    var preset by remember { mutableStateOf(BurstRender.LookPreset.STANDARD) }
+    var activeItem by remember { mutableStateOf<StripItem?>(null) }   // the control open under the viewfinder; null shows the strip
+    var focusTick by remember { mutableStateOf(0) }
+    var lastThumb by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    // the style, its palette and its texture are kept between runs, like the iPhone's
+    var preset by remember { mutableStateOf(BurstRender.LookPreset.entries.getOrElse(prefs.getInt("style", 0)) { BurstRender.LookPreset.STANDARD }) }
+    var textureStyle by remember { mutableStateOf(BurstRender.TextureStyle.entries.getOrElse(prefs.getInt("textureStyle", 0)) { BurstRender.TextureStyle.STANDARD }) }
+    var textureAmount by remember { mutableStateOf(prefs.getFloat("textureAmount", 0.5f)) }
     var evValue by remember { mutableStateOf(0f) }
-    var shadowsValue by remember { mutableStateOf(0f) }
-    var warmthValue by remember { mutableStateOf(0f) }
-    var styleIntensity by remember { mutableStateOf(1f) }
+    var shadowsValue by remember { mutableStateOf(prefs.getFloat("shadows", 0f)) }
+    LaunchedEffect(shadowsValue) { prefs.edit().putFloat("shadows", shadowsValue).apply() }
+    var warmthValue by remember { mutableStateOf(prefs.getFloat("warmth", 0f)) }
+    var styleIntensity by remember { mutableStateOf(prefs.getFloat("styleIntensity", 1f)) }
+    LaunchedEffect(preset, textureStyle, textureAmount, warmthValue, styleIntensity) { prefs.edit().putInt("style", preset.ordinal).putInt("textureStyle", textureStyle.ordinal).putFloat("textureAmount", textureAmount).putFloat("warmth", warmthValue).putFloat("styleIntensity", styleIntensity).apply() }
     // the Pro controls: slider positions 0..1, null = left to the camera
     var isoT by remember { mutableStateOf<Float?>(null) }
     var shutterT by remember { mutableStateOf<Float?>(null) }
@@ -221,7 +230,12 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     }
     LaunchedEffect(recording) { elapsed = 0; while (recording) { delay(1000); elapsed++ } }
     LaunchedEffect(videoMode) { if (videoMode && !audioGranted) askAudio.launch(android.Manifest.permission.RECORD_AUDIO) }
-    LaunchedEffect(focusPoint) { if (focusPoint != null) { delay(1200); focusPoint = null } }
+    LaunchedEffect(focusPoint, focusTick) { if (focusPoint != null) { delay(2500); focusPoint = null } }
+    // the thumbnail beside the shutter: the last photo (or video) taken
+    LaunchedEffect(last, lastVideo, videoMode) {
+        val uri = if (videoMode) lastVideo else last?.jpeg
+        lastThumb = if (uri == null) null else withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(160, 160), null) }.getOrNull() }
+    }
     // load the TPU denoiser now, off the main thread, so the first photo does not wait for it
     LaunchedEffect(Unit) { withContext(Dispatchers.Default) { com.everettpenne.holtzman.ml.TpuDenoiser.shared(context) } }
     LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
@@ -237,7 +251,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         // each frame is uploaded to the GPU and scored on the processing thread as it arrives, so the merge starts with that already done
         val prep = com.everettpenne.holtzman.save.BurstPrep()
-        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, intensity = styleIntensity, manualExposure = manualExposureOn)
+        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, intensity = styleIntensity, textureStyle = textureStyle, textureAmount = textureAmount, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
         val deliver: (List<com.everettpenne.holtzman.camera.BurstFrame>) -> Unit = { frames ->
             stamp("all frames in memory")
@@ -355,156 +369,182 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
         val ratio = previewShape?.let { it.height.toFloat() / it.width } ?: (3f / 4f)
-        // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
-        // surface the camera is about to be given.
-        run {
-            AndroidView(
-                factory = { c -> android.view.TextureView(c).apply {
-                    surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) { previewTexture = st }
-                        override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
-                        override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean { previewTexture = null; return true }
-                        override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
-                    }
-                    previewView = this
-                } },
-                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio),
-            )
-        }
-        // Touch on the picture: tap to focus (and meter) there, pinch to zoom. The same box as the preview, drawn over it.
-        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)
-            .pointerInput(Unit) { detectTapGestures { p -> focusPoint = p; controller.focusAt(p.x / size.width, p.y / size.height) } }
-            .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }) {
-            focusPoint?.let { p ->
-                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x - 36.dp.toPx()).toInt(), (p.y - 36.dp.toPx()).toInt()) }.size(72.dp)
-                    .border(2.dp, Holtzman.accent, RoundedCornerShape(10.dp)))
-            }
-        }
-
-        // the thirds grid, over the picture
-        if (grid) Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio).drawBehind {
-            val c = Color.White.copy(alpha = .35f)
-            for (i in 1..2) { drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3, 0f), androidx.compose.ui.geometry.Offset(size.width * i / 3, size.height), 1.5f); drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.5f) }
-        })
-        // the crop, shown as the part of the picture that will be cut off (computational photos only: the phone's own JPEG is not cropped)
-        if (computational && rawAvailable && !videoMode && !cropRatio.isFull) Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio).drawBehind {
-            val shade = Color.Black.copy(alpha = .6f); val r = cropRatio.longOverShort; val full = 4f / 3f
-            if (r < full) { val band = size.height * (1f - r / full) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(size.width, band)); drawRect(shade, androidx.compose.ui.geometry.Offset(0f, size.height - band), androidx.compose.ui.geometry.Size(size.width, band)) }
-            else { val band = size.width * (1f - full / r) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(band, size.height)); drawRect(shade, androidx.compose.ui.geometry.Offset(size.width - band, 0f), androidx.compose.ui.geometry.Size(band, size.height)) }
-        })
-        // the level line and the histogram, over the picture
-        val roll by rememberRollDegrees(levelOn && !videoMode)
-        val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
-        val styleThumb by rememberStyleThumb(previewView, showControls && controlTab == ControlTab.LOOK && !videoMode)
-        val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
-        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
-            if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
-            LevelOverlay(roll, Modifier.matchParentSize())
-            HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
-        }
-        if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
-
-        // top bar: settings on the left; flash, timer and grid on the right
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            BarButton(Icons.Rounded.MoreHoriz, "Settings", on = false) { showSettings = true }
-            Spacer(Modifier.weight(1f))
-            if (videoMode) quality?.let { q -> TextPill(q.label, enabled = !recording && qualities.size > 1) { quality = q.next(qualities) } }
-        }
-        // what the camera is doing, centred over the picture: a dataset session, then any message
-        Column(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 70.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (dataset && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).clickable { showSettings = false; showDataset = true }.padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.size(8.dp).background(Holtzman.accent, CircleShape))
-                Text("Dataset  \u00B7  ${datasetKind.label}" + if (datasetSaved > 0) "  \u00B7  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
-            }
-            if (night && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Rounded.NightsStay, null, tint = Holtzman.accent, modifier = Modifier.size(14.dp)); Text("Night", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
-            }
-            status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 24.dp).background(Color.Black.copy(alpha = .7f), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) }
-        }
-        // recording clock
-        if (recording) Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 70.dp).background(Color.Black.copy(alpha = .6f), CircleShape).padding(horizontal = 14.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(10.dp).background(Holtzman.red, CircleShape)); Spacer(Modifier.width(8.dp))
-            Text(recordingClock(elapsed), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
-        }
-        // zoom: one pill on the picture's lower edge with the stops the camera offers; the ratio now applied is lit
-        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
-            val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
-            if (!showControls || videoMode) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp).clip(CircleShape).background(Color.Black.copy(alpha = .45f)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                stops.forEach { stop ->
-                    val on = kotlin.math.abs(zoom - stop) < 0.05f
-                    Box(Modifier.size(width = 46.dp, height = 36.dp).clip(CircleShape).background(if (on) Color.White.copy(alpha = .22f) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }, contentAlignment = Alignment.Center) {
-                        Text(if (stop == 1f) "1\u00D7" else if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}\u00D7", style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = if (on) Holtzman.accent else Color.White)
-                    }
-                }
-                if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
-                    Box(Modifier.size(width = 56.dp, height = 36.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f), CircleShape), contentAlignment = Alignment.Center) {
-                        Text("%.1f\u00D7".format(java.util.Locale.ROOT, zoom), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Holtzman.accent)
-                    }
-            }
-            // the control of the open tab, over the picture's lower edge (the Pixel camera app puts its sliders just above the shutter)
-            if (showControls && !videoMode) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp, start = 14.dp, end = 14.dp)) {
-                when (controlTab) {
-                    ControlTab.LOOK -> StylesPanel(preset, { preset = it }, styleIntensity, { styleIntensity = it }, (warmthValue / 20f).coerceIn(-1f, 1f), (shadowsValue / 20f).coerceIn(-1f, 1f), { c, t -> warmthValue = c * 20f; shadowsValue = t * 20f }, styleThumb)
-                    ControlTab.EXPOSURE -> ControlSlider(evValue, -2f..2f, "%+.1f EV".format(java.util.Locale.ROOT, evEff), Icons.Rounded.Remove, Icons.Rounded.Add, "Exposure", { evValue = it })
-                    ControlTab.SHADOWS -> ControlSlider(shadowsValue, -20f..20f, "%+d".format(shadowsEff.toInt()), Icons.Rounded.DarkMode, Icons.Rounded.LightMode, "Shadows", { shadowsValue = it })
-                    ControlTab.SHUTTER -> ControlSlider(shutterT ?: 0.5f, 0f..1f, shutterT?.let { shutterLabel(shutterNsFromT(it, controller.exposureRangeNs)) } ?: controller.currentExposure?.let { shutterLabel(it.second) } ?: "Auto", Icons.Rounded.Speed, Icons.Rounded.HourglassBottom, "Shutter", { shutterT = it }, isAuto = shutterT == null, onAuto = { shutterT = null })
-                    ControlTab.ISO -> ControlSlider(isoT ?: 0.5f, 0f..1f, isoT?.let { "ISO " + isoFromT(it, controller.isoRange) } ?: controller.currentExposure?.let { "ISO " + it.first } ?: "Auto", Icons.Rounded.Remove, Icons.Rounded.Add, "ISO", { isoT = it }, isAuto = isoT == null, onAuto = { isoT = null })
-                    ControlTab.FOCUS -> ControlSlider(focusT ?: 0f, 0f..1f, focusT?.let { focusLabel(it * controller.minFocusDiopters) } ?: "Auto", Icons.Rounded.Landscape, Icons.Rounded.FilterCenterFocus, "Focus", { focusT = it }, isAuto = focusT == null, onAuto = { focusT = null })
-                    ControlTab.WHITE_BALANCE -> ControlSlider(warmthValue, -20f..20f, "%+d".format(warmthEff.toInt()), Icons.Rounded.AcUnit, Icons.Rounded.WbSunny, "White balance", { warmthValue = it })
-                }
-            }
-        }
-        // PHOTO / VIDEO, with the small switches for this shot above the shutter
-        if (!showControls || videoMode) Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 156.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!videoMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (nightAvailable) ShotToggle("Night", night, Icons.Rounded.NightsStay) { night = !night }
-                if (!night) ShotToggle("HDR", hdr, Icons.Rounded.HdrOn) { hdr = !hdr }
-                if (!night && (rawAvailable || raw)) ShotToggle("RAW", raw, Icons.Rounded.RawOn) { raw = !raw }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                listOf(false to "PHOTO", true to "VIDEO").forEach { (v, label) ->
-                    val on = videoMode == v
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(enabled = !recording && !on) { videoMode = v; if (v) { night = false } }.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                        Text(label, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp), color = if (on) Holtzman.accent else Color.White.copy(alpha = .7f))
-                        Box(Modifier.padding(top = 4.dp).size(width = 18.dp, height = 3.dp).background(if (on) Holtzman.accent else Color.Transparent, CircleShape))
-                    }
-                }
-            }
-        }
-
-        // bottom: the last photo, the shutter, the other lens
-        Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = if (showControls && !videoMode) 122.dp else 66.dp, start = 32.dp, end = 32.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .12f)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
-                (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
-            }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f)) }
-            // the whole 84 dp circle is the button: the tap area is set before the ring's padding, so it does not shrink while recording
-            Box(Modifier.size(84.dp).clip(CircleShape).clickable(enabled = !shutterBusy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
-                .border(4.dp, Color.White, CircleShape).padding(if (recording) 22.dp else 7.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
-                .background(if (videoMode) Holtzman.red else if (shutterBusy) Holtzman.accent.copy(alpha = .5f) else Color.White))
-            Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White.copy(alpha = .12f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK },
-                contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, "Switch camera", tint = Color.White) }
-        }
+        val styleChanged = preset != BurstRender.LookPreset.STANDARD || warmthEff != 0f || shadowsEff != 0f || textureStyle != BurstRender.TextureStyle.STANDARD
         val changed = buildSet {
-            if (preset != BurstRender.LookPreset.STANDARD) add(ControlTab.LOOK)
-            if (evEff != 0f) add(ControlTab.EXPOSURE)
-            if (shadowsEff != 0f) add(ControlTab.SHADOWS)
-            if (warmthEff != 0f) add(ControlTab.WHITE_BALANCE)
-            if (shutterT != null) add(ControlTab.SHUTTER)
-            if (isoT != null) add(ControlTab.ISO)
-            if (focusT != null) add(ControlTab.FOCUS)
+            if (styleChanged) add(StripItem.STYLES)
+            if (evEff != 0f) add(StripItem.EXPOSURE)
+            if (shutterT != null) add(StripItem.SHUTTER)
+            if (isoT != null) add(StripItem.ISO)
+            if (focusT != null) add(StripItem.FOCUS)
+            if (!cropRatio.isFull) add(StripItem.ASPECT)
+            if (timer != TimerMode.OFF) add(StripItem.TIMER)
         }
-        if (showControls && !videoMode) Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.size(width = 56.dp, height = 20.dp).clickable { showControls = false }.semantics { contentDescription = "Close controls" }, contentAlignment = Alignment.Center) {
-                Box(Modifier.size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .5f), CircleShape))
+        val lit = buildSet { if (flash != FlashMode.OFF) add(StripItem.FLASH); if (night) add(StripItem.NIGHT); if (hdr) add(StripItem.HDR); if (raw) add(StripItem.RAW) }
+        val flashIcon = when (flash) { FlashMode.OFF -> Icons.Rounded.FlashOff; FlashMode.AUTO -> Icons.Rounded.FlashAuto; FlashMode.ON -> Icons.Rounded.FlashOn }
+        val sheetItems = StripItem.entries.filter {
+            when (it) {
+                StripItem.FLASH -> flashAvailable && !night
+                StripItem.NIGHT -> nightAvailable
+                StripItem.HDR -> !night
+                StripItem.RAW -> !night && (rawAvailable || raw)
+                StripItem.EXPOSURE -> !manualExposureOn   // a hand-set exposure has no compensation
+                else -> true
             }
-            val tabs = ControlTab.entries.filter { it != ControlTab.EXPOSURE || !manualExposureOn }   // a hand-set exposure has no compensation
-            ControlTabs(controlTab.takeIf { it in tabs } ?: ControlTab.LOOK, changed, tabs, { controlTab = it }, onReset = { preset = BurstRender.LookPreset.STANDARD; styleIntensity = 1f; evValue = 0f; shadowsValue = 0f; warmthValue = 0f; isoT = null; shutterT = null; focusT = null })
-        } else Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp, start = 32.dp, end = 32.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            BottomButton(Icons.Rounded.Settings, "Photo settings", on = false) { showPhotoSettings = true }
-            if (!videoMode) BottomButton(Icons.Rounded.Tune, "Controls", on = false, dot = changed.isNotEmpty()) { showControls = true } else Spacer(Modifier.size(46.dp))
+        }
+        val closeCard = { activeItem = null }
+
+        // ---- the top: a centred row of small icons for what is switched on (the iPhone's), then the viewfinder
+        Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding()) {
+            Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+                if (recording) Row(Modifier.clip(CircleShape).background(Color(0xFFFF3B30)).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(recordingClock(elapsed), style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+                } else if (videoMode) quality?.let { q -> TextPill(q.label, enabled = qualities.size > 1) { quality = q.next(qualities) } }
+                else {
+                    if (flashAvailable && !night) TopIcon(flashIcon, when (flash) { FlashMode.OFF -> "Flash off"; FlashMode.AUTO -> "Flash auto"; FlashMode.ON -> "Flash on" }, flash != FlashMode.OFF) { activeItem = StripItem.FLASH; showControls = false }
+                    if (nightAvailable) TopIcon(Icons.Rounded.NightsStay, if (night) "Night mode on" else "Night mode off", night) { night = !night }
+                    if (!cropRatio.isFull) TopIcon(Icons.Rounded.AspectRatio, "Aspect ${cropRatio.label}", true) { activeItem = StripItem.ASPECT; showControls = false }
+                    if (timer != TimerMode.OFF) TopIcon(Icons.Rounded.Timer, "Timer ${timer.label}", true) { activeItem = StripItem.TIMER; showControls = false }
+                    if (raw && !night) Text("RAW", style = IosType.footnote.copy(fontWeight = FontWeight.Bold), color = CameraYellow, modifier = Modifier.clip(CircleShape).clickable { raw = false }.padding(horizontal = 6.dp, vertical = 8.dp))
+                    if (styleChanged) TopIcon(Icons.Rounded.AutoAwesome, "Photographic style", true) { activeItem = StripItem.STYLES; showControls = false }
+                }
+            }
+            // ---- the viewfinder
+            Box(Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(14.dp))) {
+                // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
+                // surface the camera is about to be given.
+                AndroidView(
+                    factory = { c -> android.view.TextureView(c).apply {
+                        surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) { previewTexture = st }
+                            override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+                            override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean { previewTexture = null; return true }
+                            override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
+                        }
+                        previewView = this
+                    } },
+                    modifier = Modifier.matchParentSize(),
+                )
+                // Touch on the picture: tap to focus (and meter) there, then drag up or down for exposure (the sun beside the focus square), pinch to zoom,
+                // swipe a long way sideways to change mode.
+                Box(Modifier.matchParentSize()
+                    .pointerInput(Unit) { detectTapGestures { p -> focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) } }
+                    .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }
+                    .pointerInput(videoMode, recording) { var total = 0f; detectHorizontalDragGestures(onDragStart = { total = 0f }, onDragEnd = { if (!recording) { if (total > 160f && videoMode) { videoMode = false } else if (total < -160f && !videoMode) { videoMode = true; night = false } } }) { _, dx -> total += dx } }
+                    .pointerInput(Unit) { detectVerticalDragGestures { change, dy -> if (focusPoint != null && !manualExposureOn) { evValue = (evValue - dy / 110.dp.toPx()).coerceIn(-2f, 2f); focusTick++; change.consume() } } }) {
+                    focusPoint?.let { p ->
+                        val box = 72.dp
+                        Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x - box.toPx() / 2).toInt(), (p.y - box.toPx() / 2).toInt()) }.size(box).border(1.6.dp, CameraYellow, RoundedCornerShape(4.dp)))
+                        if (!manualExposureOn) {
+                            // the exposure handle: a thin line beside the square with a sun on it that rides up and down with the compensation
+                            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx()).toInt(), (p.y - 55.dp.toPx()).toInt()) }.size(width = 1.5.dp, height = 110.dp).background(CameraYellow.copy(alpha = .8f)))
+                            Icon(Icons.Rounded.WbSunny, null, tint = CameraYellow, modifier = Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx() - 11.dp.toPx()).toInt(), (p.y - (evEff / 2f) * 55.dp.toPx() - 11.dp.toPx()).toInt()) }.size(22.dp))
+                        }
+                    }
+                }
+                // the thirds grid, over the picture
+                if (grid) Box(Modifier.matchParentSize().drawBehind {
+                    val c = Color.White.copy(alpha = .35f)
+                    for (i in 1..2) { drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3, 0f), androidx.compose.ui.geometry.Offset(size.width * i / 3, size.height), 1.5f); drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.5f) }
+                })
+                // the crop, shown as the part of the picture that will be cut off (computational photos only: the phone's own JPEG is not cropped)
+                if (computational && rawAvailable && !videoMode && !cropRatio.isFull) Box(Modifier.matchParentSize().drawBehind {
+                    val shade = Color.Black.copy(alpha = .6f); val r = cropRatio.longOverShort; val full = 4f / 3f
+                    if (r < full) { val band = size.height * (1f - r / full) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(size.width, band)); drawRect(shade, androidx.compose.ui.geometry.Offset(0f, size.height - band), androidx.compose.ui.geometry.Size(size.width, band)) }
+                    else { val band = size.width * (1f - full / r) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(band, size.height)); drawRect(shade, androidx.compose.ui.geometry.Offset(size.width - band, 0f), androidx.compose.ui.geometry.Size(band, size.height)) }
+                })
+                // the level line, the histogram and focus peaking, over the picture
+                val roll by rememberRollDegrees(levelOn && !videoMode)
+                val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
+                val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
+                if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
+                LevelOverlay(roll, Modifier.matchParentSize())
+                HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
+                if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
+                // what the camera is doing, at the top of the picture: a dataset session, then any message
+                Column(Modifier.align(Alignment.TopCenter).padding(top = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (dataset && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).clickable { showSettings = false; showDataset = true }.padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(8.dp).background(CameraYellow, CircleShape))
+                        Text("Dataset  ·  ${datasetKind.label}" + if (datasetSaved > 0) "  ·  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
+                    }
+                    status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 24.dp).background(Color.Black.copy(alpha = .7f), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) }
+                }
+                // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
+                run {
+                    val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
+                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        stops.forEach { stop ->
+                            val on = kotlin.math.abs(zoom - stop) < 0.05f
+                            val num = if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}"
+                            Box(Modifier.size(if (on) 38.dp else 34.dp).clip(CircleShape).background(if (on) Color.Black.copy(alpha = .5f) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }, contentAlignment = Alignment.Center) {
+                                Text(if (on) "$num×" else num, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = if (on) CameraYellow else Color.White)
+                            }
+                        }
+                        if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
+                            Box(Modifier.size(44.dp).background(Color.Black.copy(alpha = .5f), CircleShape), contentAlignment = Alignment.Center) {
+                                Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = CameraYellow)
+                            }
+                    }
+                }
+            }
+        }
+
+        // ---- the bottom: the shutter with an exposure button on one side and the controls button on the other, and under it the last photo, the modes, the other lens
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 38.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                if (!videoMode && !manualExposureOn) Box(Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = if (evEff != 0f) .22f else .13f)).clickable { activeItem = if (activeItem == StripItem.EXPOSURE) null else StripItem.EXPOSURE; showControls = false }.semantics { contentDescription = "Exposure" },
+                    contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Exposure, null, tint = if (evEff != 0f) CameraYellow else Color.White, modifier = Modifier.size(24.dp)) }
+                else Spacer(Modifier.size(48.dp))
+                // the shutter: a white disc in a grey ring; in video the disc is red, and a small red square while recording. The whole 80 dp is the button.
+                Box(Modifier.size(80.dp).clip(CircleShape).clickable(enabled = !shutterBusy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
+                    .border(4.dp, Color.White.copy(alpha = .55f), CircleShape).padding(if (recording) 24.dp else 6.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
+                    .background(if (videoMode) Color(0xFFFF3B30) else if (shutterBusy) Color.White.copy(alpha = .55f) else Color.White))
+                Box(Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = if (showControls || changed.isNotEmpty()) .22f else .13f)).clickable { showControls = !showControls; activeItem = null }.semantics { contentDescription = "Controls" },
+                    contentAlignment = Alignment.Center) { SixDots(color = if (changed.isNotEmpty() && !showControls) CameraYellow else Color.White) }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Box(Modifier.size(46.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .12f)).border(1.5.dp, Color.White.copy(alpha = .4f), RoundedCornerShape(12.dp)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
+                    (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
+                }, contentAlignment = Alignment.Center) {
+                    val thumb = lastThumb
+                    if (thumb != null) androidx.compose.foundation.Image(thumb.asImageBitmap(), "Last photo", Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f))
+                }
+                if (!recording) ModeCapsule(videoMode, true, { v -> videoMode = v; if (v) night = false }) else Spacer(Modifier.size(1.dp))
+                Box(Modifier.size(46.dp).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = .13f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK }.semantics { contentDescription = "Switch camera" },
+                    contentAlignment = Alignment.Center) { Icon(Icons.Rounded.FlipCameraAndroid, null, tint = Color.White) }
+            }
+        }
+
+        // ---- the card of the control being set, over the lower part of the picture, above the shutter
+        val styleThumb by rememberStyleThumb(previewView, activeItem == StripItem.STYLES && !videoMode)
+        if (activeItem != null && !showControls) Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 160.dp)) {
+            when (activeItem) {
+                StripItem.FLASH -> CardFrame { CardHeader(closeCard) { CardTitle("Flash") }; OptionsRow(FlashMode.entries.map { it.label }, flash.ordinal, { flash = FlashMode.entries[it] }) }
+                StripItem.ASPECT -> CardFrame { CardHeader(closeCard) { CardTitle("Aspect") }; OptionsRow(PhotoRatio.entries.map { it.label }, cropRatio.ordinal, { cropRatio = PhotoRatio.entries[it] }) }
+                StripItem.TIMER -> CardFrame { CardHeader(closeCard) { CardTitle("Timer") }; OptionsRow(TimerMode.entries.map { it.label }, timer.ordinal, { timer = TimerMode.entries[it] }) }
+                StripItem.STYLES -> StylesCard(preset, { preset = it }, styleIntensity, { styleIntensity = it },
+                    (warmthValue / 20f).coerceIn(-1f, 1f), (shadowsValue / 20f).coerceIn(-1f, 1f), { c, t -> warmthValue = c * 20f; shadowsValue = t * 20f },
+                    textureStyle, { textureStyle = it }, textureAmount, { textureAmount = it }, styleThumb, closeCard)
+                StripItem.EXPOSURE -> CardFrame { CardHeader(closeCard) { CardTitle("Exposure  " + "%+.1f".format(java.util.Locale.ROOT, evEff)) }; TickSlider((evValue + 2f) / 4f, { evValue = it * 4f - 2f }, Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) }
+                StripItem.SHUTTER -> CardFrame { CardHeader(closeCard) { CardTitle("Shutter") }; ControlSlider(shutterT ?: 0.5f, 0f..1f, shutterT?.let { shutterLabel(shutterNsFromT(it, controller.exposureRangeNs)) } ?: controller.currentExposure?.let { shutterLabel(it.second) } ?: "Auto", Icons.Rounded.Speed, Icons.Rounded.HourglassBottom, "Shutter", { shutterT = it }, isAuto = shutterT == null, onAuto = { shutterT = null }) }
+                StripItem.ISO -> CardFrame { CardHeader(closeCard) { CardTitle("ISO") }; ControlSlider(isoT ?: 0.5f, 0f..1f, isoT?.let { "ISO " + isoFromT(it, controller.isoRange) } ?: controller.currentExposure?.let { "ISO " + it.first } ?: "Auto", Icons.Rounded.Remove, Icons.Rounded.Add, "ISO", { isoT = it }, isAuto = isoT == null, onAuto = { isoT = null }) }
+                StripItem.FOCUS -> CardFrame { CardHeader(closeCard) { CardTitle("Focus") }; ControlSlider(focusT ?: 0f, 0f..1f, focusT?.let { focusLabel(it * controller.minFocusDiopters) } ?: "Auto", Icons.Rounded.Landscape, Icons.Rounded.FilterCenterFocus, "Focus", { focusT = it }, isAuto = focusT == null, onAuto = { focusT = null }) }
+                else -> {}
+            }
+        }
+        // ---- the controls sheet: over everything below the picture; touching outside it puts it away
+        if (showControls) {
+            Box(Modifier.fillMaxSize().clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = false })
+            ControlsSheet(sheetItems, mapOf(StripItem.FLASH to flashIcon), lit, changed, { i ->
+                when (i) {
+                    StripItem.NIGHT -> night = !night; StripItem.HDR -> hdr = !hdr; StripItem.RAW -> raw = !raw
+                    StripItem.SETTINGS -> { showControls = false; showSettings = true }
+                    else -> { showControls = false; activeItem = i }
+                }
+            }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 10.dp))
         }
     }
     LaunchedEffect(isoT, shutterT) { controller.setManualExposure(isoT?.let { isoFromT(it, controller.isoRange) }, shutterT?.let { shutterNsFromT(it, controller.exposureRangeNs) }) }
@@ -512,15 +552,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(evEff) { controller.setExposureCompensation(evEff) }
     LaunchedEffect(warmthEff) { controller.setWarmth(1f + 0.006f * warmthEff) }
     if (showPhotoSettings) PhotoSettingsSheet(
-        ratio = cropRatio, onRatio = { cropRatio = it }, ratioApplies = computational && rawAvailable,
-        timer = timer, onTimer = { timer = it }, flash = flash, onFlash = { flash = it }, flashAvailable = flashAvailable,
-        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, longCapture = longCapture, onLongCapture = { longCapture = it }, instant = instant && !longCapture, onInstant = { instant = it; if (it) longCapture = false }, onDismiss = { showPhotoSettings = false })
+        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it },
+        longCapture = longCapture, onLongCapture = { longCapture = it }, instant = instant && !longCapture, onInstant = { instant = it; if (it) longCapture = false },
+        onDismiss = { showPhotoSettings = false })
     if (showSettings) SettingsSheet(
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
         raw = raw, onRaw = { raw = it },
         texture = texture, onTexture = { texture = it }, grain = grain, onGrain = { grain = it },
         datasetOn = dataset, datasetKind = datasetKind.label, datasetSaved = datasetSaved,
+        onCaptureSettings = { showSettings = false; showPhotoSettings = true },
+        styleName = preset.label + if (textureStyle != BurstRender.TextureStyle.STANDARD) " + ${textureStyle.label}" else "",
+        onStyles = { showSettings = false; showControls = false; activeItem = StripItem.STYLES },
         onDataset = { showSettings = false; showDataset = true },
         onReport = { showSettings = false; showReport = true },
         onCompare = { showSettings = false; shoot(highQuality = false); scope.launch { delay(2500); shoot(highQuality = true) } },
@@ -535,12 +578,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     if (showReport) CameraReportSheet(onDismiss = { showReport = false })
 }
 
-/** A round dark button for the bars over the picture; lit with the accent when its feature is on. */
+/** An icon on the top bar, bare like the iPhone's: white, or yellow when its feature is on. */
 @Composable
-private fun BarButton(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, on: Boolean, badge: String? = null, onClick: () -> Unit) {
-    Box(Modifier.size(42.dp).clip(CircleShape).background(if (on) Holtzman.accent.copy(alpha = .9f) else Color.Black.copy(alpha = .45f)).clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
-        Icon(icon, null, tint = if (on) Color.Black else Color.White, modifier = Modifier.size(22.dp))
-        if (badge != null) Text(badge, style = IosType.caption2.copy(fontWeight = FontWeight.Bold), color = Color.Black, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 3.dp))
+private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, on: Boolean, onClick: () -> Unit) {
+    Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = if (on) CameraYellow else Color.White, modifier = Modifier.size(24.dp))
     }
 }
 
@@ -548,14 +590,4 @@ private fun BarButton(icon: androidx.compose.ui.graphics.vector.ImageVector, des
 private fun TextPill(label: String, enabled: Boolean, onClick: () -> Unit) {
     Text(label, maxLines = 1, softWrap = false, style = IosType.subheadline.copy(fontWeight = FontWeight.SemiBold), color = Color.White,
         modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .45f)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp))
-}
-
-/** A small labelled switch for the next shot (Night, HDR, RAW): filled with the accent when on, a quiet outline when off. */
-@Composable
-private fun ShotToggle(label: String, on: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-    Row(Modifier.clip(CircleShape).background(if (on) Holtzman.accent else Color.White.copy(alpha = .12f)).border(1.dp, if (on) Color.Transparent else Color.White.copy(alpha = .22f), CircleShape)
-        .clickable(onClick = onClick).padding(start = 10.dp, end = 14.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Icon(icon, null, tint = if (on) Color.Black else Color.White, modifier = Modifier.size(16.dp))
-        Text(label, maxLines = 1, softWrap = false, style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = if (on) Color.Black else Color.White)
-    }
 }

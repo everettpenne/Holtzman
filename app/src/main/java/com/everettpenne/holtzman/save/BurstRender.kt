@@ -40,6 +40,18 @@ object BurstRender {
     }
 
     /**
+     * The iPhone's Texture row: a character for the whole picture, with an amount. Each adds to the picture's texture, grain, contrast and shadows (in the
+     * slider units of [LookTuning] and [LookPreset]) in proportion to the amount, 0..1. Applied when the photo is made, like the iPhone's.
+     */
+    enum class TextureStyle(val label: String, val texture: Float = 0f, val grain: Float = 0f, val contrast: Float = 0f, val shadows: Float = 0f) {
+        STANDARD("Standard"),
+        SOFT_SKIN("Soft Skin", texture = -0.7f, shadows = 2f),
+        GLOW("Glow", texture = -0.3f, contrast = -0.12f, shadows = 6f),
+        FILM("Film", texture = -0.1f, grain = 0.45f, contrast = -0.05f),
+        GRAIN("Grain", grain = 0.8f),
+    }
+
+    /**
      * What the camera screen's controls ask for. [texture] runs from -1 (softer) to +1 (crisper), 0 = the tuned look: it scales the fine-detail gain and
      * the medium-scale contrast with it, and the sharpening by about half as much. [grain] is film grain from 0 (none) to 1 (heavy, [GRAIN_LEVELS] display
      * levels of 255 at the strongest); [DEFAULT_GRAIN] is the tuned look's 1.2 levels. [exposureEv] is exposure compensation in stops. [shadows] and
@@ -50,6 +62,7 @@ object BurstRender {
                      val exposureEv: Float = 0f, val shadows: Float = 0f, val warmth: Float = 0f,
                      /** How much of the style's own difference from the standard look is applied, 0..1 (the Photographic Styles intensity); the user's own shadows, warmth, texture and grain are not scaled. */
                      val intensity: Float = 1f,
+                     val textureStyle: TextureStyle = TextureStyle.STANDARD, val textureAmount: Float = 0.5f,
                      /** The ISO and/or shutter were set by hand: the picture keeps the brightness they gave instead of being brought to the usual one. */
                      val manualExposure: Boolean = false) {
         /** The white balance shift as a multiplier of the red gain (the blue gain is divided by it). */
@@ -60,12 +73,13 @@ object BurstRender {
     private fun tuned(l: com.everettpenne.ix.IxLook, t: LookTuning): com.everettpenne.ix.IxLook {
         val i = t.intensity.coerceIn(0f, 1f)
         fun mix(base: Float, styled: Float?): Float = base + ((styled ?: base) - base) * i
-        val x = (t.texture + t.preset.texture * i).coerceIn(-1f, 1f)
-        return com.everettpenne.ix.IxLook(mix(l.blackPoint, t.preset.blackPoint), mix(l.contrast, t.preset.contrast), mix(l.saturation, t.preset.saturation),
+        val ta = t.textureAmount.coerceIn(0f, 1f); val ts = t.textureStyle
+        val x = (t.texture + t.preset.texture * i + ts.texture * ta).coerceIn(-1f, 1f)
+        return com.everettpenne.ix.IxLook(mix(l.blackPoint, t.preset.blackPoint), mix(l.contrast, t.preset.contrast) + ts.contrast * ta, mix(l.saturation, t.preset.saturation),
             sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
             denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
-            localTone = l.localTone, grain = (t.grain + t.preset.grain * i).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
-            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows * i) / 20f).coerceIn(-1f, 1f))
+            localTone = l.localTone, grain = (t.grain + t.preset.grain * i + ts.grain * ta).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
+            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows * i + ts.shadows * ta) / 20f).coerceIn(-1f, 1f))
     }
 
     /** [LOOK] with the user's [tuning], and any stages the debug switches turned off. */

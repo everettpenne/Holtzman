@@ -42,3 +42,30 @@ class StyleIntensityTest {
         assertTrue(LookPreset.entries.size >= 10)
     }
 }
+
+class TextureStyleTest {
+    private val base = BurstRender.LOOK
+    @Test fun standardTextureChangesNothingAtAnyAmount() {
+        val plain = BurstRender.look(BurstRender.LookTuning())
+        for (a in listOf(0f, 0.5f, 1f)) {
+            val l = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.STANDARD, textureAmount = a))
+            assertEquals(plain.detail, l.detail, 1e-6f); assertEquals(plain.grain, l.grain, 1e-6f); assertEquals(plain.contrast, l.contrast, 1e-6f); assertEquals(plain.shadows, l.shadows, 1e-6f)
+        }
+    }
+
+    @Test fun softSkinSmoothsAndGrainAddsGrainInProportionToTheAmount() {
+        val plain = BurstRender.look(BurstRender.LookTuning())
+        val soft = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.SOFT_SKIN, textureAmount = 1f))
+        val softHalf = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.SOFT_SKIN, textureAmount = 0.5f))
+        assertTrue(soft.detail < softHalf.detail && softHalf.detail < plain.detail)
+        val grain = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.GRAIN, textureAmount = 1f))
+        val grainHalf = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.GRAIN, textureAmount = 0.5f))
+        assertTrue(grain.grain > grainHalf.grain && grainHalf.grain > plain.grain)
+        assertEquals((BurstRender.LookTuning.DEFAULT_GRAIN + 0.8f) * BurstRender.LookTuning.GRAIN_LEVELS, grain.grain, 1e-4f)
+    }
+
+    @Test fun glowLowersContrastAndLiftsShadows() {
+        val plain = BurstRender.look(BurstRender.LookTuning()); val glow = BurstRender.look(BurstRender.LookTuning(textureStyle = BurstRender.TextureStyle.GLOW, textureAmount = 1f))
+        assertEquals(plain.contrast - 0.12f, glow.contrast, 1e-6f); assertEquals(6f / 20f, glow.shadows, 1e-6f)
+    }
+}
