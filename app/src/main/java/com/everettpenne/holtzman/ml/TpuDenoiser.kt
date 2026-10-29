@@ -22,10 +22,15 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
     private val pool = java.util.concurrent.Executors.newFixedThreadPool(WORKERS)
 
     /** One tile's work: where it is, which part of its result is kept, and its input and output as plain arrays (so they move to and from the TPU's buffers in bulk). */
+    private class Buf { val features = FloatArray(TILE * TILE * CHANNELS); val result = FloatArray(TILE * TILE * 4) }
     private class Job(val y0: Int, val x0: Int, val keepTop: Int, val keepLeft: Int, val keepBottom: Int, val keepRight: Int) {
-        val features = FloatArray(TILE * TILE * CHANNELS)
-        val result = FloatArray(TILE * TILE * 4)
+        lateinit var buf: Buf
+        val features get() = buf.features
+        val result get() = buf.result
     }
+    /** The tiles' working arrays, a few reused for the whole picture (a tile owning its own would be 63 x 3.5 MB on the heap for every shot). */
+    private val buffers = java.util.concurrent.ArrayBlockingQueue<Buf>(BUFFERS).also { q -> repeat(BUFFERS) { q.add(Buf()) } }
+    private val writers = java.util.concurrent.Executors.newFixedThreadPool(WRITERS)
 
     private class Scratch {
         val gathered = Array(4) { FloatArray((TILE + 4) * (TILE + 4)) }
@@ -45,6 +50,7 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
      */
     @Synchronized fun denoise(mosaic: ShortArray, width: Int, height: Int, black: IntArray, white: Int, shot: Float, readVariance: Float, effectiveFrames: Float): ShortArray {
         val cw = width / 2; val ch = height / 2
+        val t0 = System.nanoTime()
         val range = FloatArray(4) { (white - black[it]).toFloat() }
         val mean = range.average().toFloat()
         val planes = Array(4) { FloatArray(cw * ch) }
@@ -62,6 +68,7 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
                 sigma[cy * cw + cx] = s / 4f
             }
         } })
+        val t1 = System.nanoTime()
         val result = mosaic.copyOf()
         val step = TILE - 2 * PAD
         val jobs = ArrayList<Job>()
@@ -71,22 +78,74 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
             while (tx < cw) {
                 // a tile starts at (ty, tx) in cells, pulled back so it never runs off the picture; its centre is kept except at the picture's own edge
                 val y0 = min(ty, max(ch - TILE, 0)); val x0 = min(tx, max(cw - TILE, 0))
-                jobs += Job(y0, x0, if (y0 == 0) 0 else PAD, if (x0 == 0) 0 else PAD, if (y0 + TILE >= ch) TILE else TILE - PAD, if (x0 + TILE >= cw) TILE else TILE - PAD)
+                // the last tile of a row or column is pulled back, so it would also cover cells its neighbour keeps; it keeps only from where the neighbour's
+                // share ends (ty + PAD), so no two tiles write the same cell and the order they finish in cannot change the picture
+                jobs += Job(y0, x0, if (y0 == 0) 0 else ty + PAD - y0, if (x0 == 0) 0 else tx + PAD - x0, if (y0 + TILE >= ch) TILE else TILE - PAD, if (x0 + TILE >= cw) TILE else TILE - PAD)
                 tx += step
             }
             ty += step
         }
-        for (chunk in jobs.chunked(WORKERS * 2)) {
-            runAll(chunk.map { j -> { buildFeatures(j, planes, sigma, cw, ch) } })
-            for (j in chunk) {
+        // A pipeline: [WORKERS] threads build tiles' inputs, this thread feeds the TPU as they arrive (it takes them one at a time), and [WRITERS]
+        // threads write the answers back, so the TPU is never waiting for the CPU nor the CPU for the TPU. Each tile borrows one of [BUFFERS] arrays
+        // from build to write-back, which also bounds how far the builders run ahead.
+        val ready = java.util.concurrent.LinkedBlockingQueue<Job>()
+        val failed = Job(0, 0, 0, 0, 0, 0)   // put on the queue by a builder that threw (a queue cannot hold null)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val builders = jobs.map { j -> pool.submit {
+            try { j.buf = buffers.take(); buildFeatures(j, planes, sigma, cw, ch); ready.put(j) }
+            catch (t: InterruptedException) { }
+            catch (t: Throwable) { failure.compareAndSet(null, t); ready.put(failed) }
+        } }
+        val writes = ArrayList<java.util.concurrent.Future<*>>(jobs.size)
+        var tRun = 0L
+        try {
+            repeat(jobs.size) {
+                val j = ready.poll(20, java.util.concurrent.TimeUnit.SECONDS) ?: throw java.io.IOException("the denoiser stalled")
+                if (j === failed) throw (failure.get() ?: java.io.IOException("a tile failed"))
+                val a = System.nanoTime()
                 // fresh views each time: the runtime moves the buffers' positions, and a view made from a buffer left at its end would be empty
                 input.rewind(); input.asFloatBuffer().put(j.features); input.rewind(); output.rewind()
                 interpreter.run(input, output)
                 output.rewind(); output.asFloatBuffer().get(j.result)
+                tRun += System.nanoTime() - a
+                writes += writers.submit { try { writeBack(j, planes, sigma, result, range, black, width, cw, ch) } finally { buffers.put(j.buf) } }
             }
-            runAll(chunk.map { j -> { writeBack(j, planes, sigma, result, range, black, width, cw, ch) } })
+            writes.forEach { it.get() }
+        } catch (t: Throwable) {
+            builders.forEach { it.cancel(true) }; writes.forEach { it.cancel(true) }
+            // tiles that were in flight still hold buffers; start the next picture with a full set
+            buffers.clear(); repeat(BUFFERS) { buffers.add(Buf()) }
+            throw t
         }
+        if (com.everettpenne.holtzman.save.DebugFlags.on("checkdenoise")) checkAgainstSerial(jobs, planes, sigma, cw, ch, result, range, black, width)
+        android.util.Log.i("HoltzmanTiming", "denoise: planes ${(t1 - t0) / 1_000_000} ms, TPU busy ${tRun / 1_000_000} ms, whole ${(System.nanoTime() - t0) / 1_000_000} ms, ${jobs.size} tiles")
         return result
+    }
+
+    /**
+     * Debug (switch `checkdenoise`): redoes every tile one at a time with one buffer, twice, and logs how the pipelined answer differs from the first
+     * serial one and how the two serial ones differ from each other (the TPU computes in half precision, so identical input may not give identical output).
+     */
+    private fun checkAgainstSerial(jobs: List<Job>, planes: Array<FloatArray>, sigma: FloatArray, cw: Int, ch: Int, got: ShortArray, range: FloatArray, black: IntArray, width: Int) {
+        val buf = Buf()
+        fun serial(): ShortArray {
+            val out = got.copyOf()
+            for (j in jobs) {
+                j.buf = buf; buildFeatures(j, planes, sigma, cw, ch)
+                input.rewind(); input.asFloatBuffer().put(j.features); input.rewind(); output.rewind()
+                interpreter.run(input, output)
+                output.rewind(); output.asFloatBuffer().get(j.result)
+                writeBack(j, planes, sigma, out, range, black, width, cw, ch)
+            }
+            return out
+        }
+        fun compare(a: ShortArray, b: ShortArray): String {
+            var worst = 0; var differ = 0
+            for (i in a.indices) { val d = kotlin.math.abs((a[i].toInt() and 0xFFFF) - (b[i].toInt() and 0xFFFF)); if (d != 0) { differ++; if (d > worst) worst = d } }
+            return "$differ of ${a.size} samples differ, largest difference $worst"
+        }
+        val one = serial(); val two = serial()
+        Log.i("HoltzmanTiming", "denoise check: pipelined vs serial: ${compare(got, one)}; serial vs serial again: ${compare(one, two)}")
     }
 
     private fun runAll(tasks: List<() -> Unit>) { pool.invokeAll(tasks.map { t -> java.util.concurrent.Callable { t() } }).forEach { it.get() } }
@@ -121,7 +180,7 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
                 } } }
     }
 
-    override fun close() { runCatching { pool.shutdownNow() }; runCatching { interpreter.close() }; runCatching { delegate.close() } }
+    override fun close() { runCatching { pool.shutdownNow() }; runCatching { writers.shutdownNow() }; runCatching { interpreter.close() }; runCatching { delegate.close() } }
 
     companion object {
         private var shared: TpuDenoiser? = null
@@ -139,6 +198,8 @@ class TpuDenoiser private constructor(private val interpreter: Interpreter, priv
         const val TILE = 256
         const val CHANNELS = 9
         private const val WORKERS = 4
+        private const val WRITERS = 2
+        private const val BUFFERS = 10
         const val PAD = 16
         private const val MODEL = "denoiser_int8.tflite"
         private const val TAG = "HoltzmanTpu"

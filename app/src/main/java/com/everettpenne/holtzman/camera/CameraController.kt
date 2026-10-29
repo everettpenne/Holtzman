@@ -84,10 +84,12 @@ class CameraController(private val context: Context) {
     private var zoomSupportedInExtension = false
     private var repeatingTemplate: CaptureRequest.Builder? = null
     private val afReset = Runnable { clearFocus() }
+    /** The frame number of the capture that carried the latest autofocus trigger (-1 until its result arrives): a focus state from an earlier frame says nothing about that scan. */
+    @Volatile private var triggerFrame = -1L
     @Volatile private var precapturing = false
 
     /** What automatic exposure was doing in the latest preview frame: where a burst starts from. Null until a frame has been seen. */
-    class AutoSample(val exposureNs: Long, val iso: Int, val focusDiopters: Float?, val afState: Int?)
+    class AutoSample(val exposureNs: Long, val iso: Int, val focusDiopters: Float?, val afState: Int?, val frame: Long = -1L)
     @Volatile var autoSample: AutoSample? = null; private set
     /** The faces the camera found in its latest preview frame (empty when none, or when the camera cannot detect faces). */
     @Volatile var latestFaces: List<FaceBox> = emptyList(); private set
@@ -102,7 +104,7 @@ class CameraController(private val context: Context) {
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
-            if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE))
+            if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE), result.frameNumber)
             latestFaces = facesOf(result)
         }
     }
@@ -287,7 +289,10 @@ class CameraController(private val context: Context) {
                     set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
                     set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
                 }.build()
-                s.capture(trigger, null, handler)
+                triggerFrame = -1L
+                s.capture(trigger, object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) { triggerFrame = result.frameNumber }
+                }, handler)
             } catch (e: Exception) { Log.w(TAG, "focus trigger failed", e) }
         }
         handler.removeCallbacks(afReset); handler.postDelayed(afReset, 3500)
@@ -319,13 +324,16 @@ class CameraController(private val context: Context) {
             fun poll() {
                 val waited = android.os.SystemClock.uptimeMillis() - started
                 val state = autoSample?.afState
-                if ((state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) && waited > 200 || waited > 1500) {
+                // A locked state counts only from a frame after the trigger's own: a lock left over from before it would end the wait with the lens
+                // still moving. (This replaces a blind 200 ms minimum wait, which cost every shot about 0.28 s.)
+                val fresh = (autoSample?.frame ?: -1L) > triggerFrame && triggerFrame >= 0
+                if ((state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) && fresh || waited > 1500) {
                     Log.i(TAG, "shutter focus: state $state after ${waited} ms, ${autoSample?.focusDiopters} diopters")
                     handler.removeCallbacks(afReset); handler.postDelayed(afReset, 4000)
                     then()
-                } else handler.postDelayed({ poll() }, 40)
+                } else handler.postDelayed({ poll() }, 10)
             }
-            handler.postDelayed({ poll() }, 120)
+            handler.post { poll() }
         }
     }
 
