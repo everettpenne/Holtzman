@@ -20,10 +20,26 @@ object BurstRender {
         autoTone = 1f,
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)
         curve = floatArrayOf(0f, 4f, 13f, 34f, 55f, 75f, 106f, 132f, 156f, 180f, 203f, 245f).map { it / 255f }.toFloatArray())
-    /** [LOOK] with any stages the debug switches turned off. */
-    fun look(): com.everettpenne.ix.IxLook {
-        if (DebugFlags.raw.isEmpty()) return LOOK
-        val l = LOOK
+    /**
+     * The two finish controls in Settings. [texture] runs from -1 (softer) to +1 (crisper), 0 = the tuned look: it scales the fine-detail gain and the
+     * medium-scale contrast with it, and the sharpening by about half as much. [grain] is film grain from 0 (none) to 1 (heavy, [GRAIN_LEVELS] display
+     * levels of 255 at the strongest); [DEFAULT_GRAIN] is the tuned look's 1.2 levels.
+     */
+    class LookTuning(val texture: Float = 0f, val grain: Float = DEFAULT_GRAIN) {
+        companion object { const val DEFAULT_GRAIN = 0.2f; const val GRAIN_LEVELS = 6f }
+    }
+
+    private fun tuned(l: com.everettpenne.ix.IxLook, t: LookTuning): com.everettpenne.ix.IxLook {
+        val x = t.texture.coerceIn(-1f, 1f)
+        return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
+            denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
+            localTone = l.localTone, grain = t.grain.coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = l.autoTone)
+    }
+
+    /** [LOOK] with the user's [tuning], and any stages the debug switches turned off. */
+    fun look(tuning: LookTuning = LookTuning()): com.everettpenne.ix.IxLook {
+        val l = tuned(LOOK, tuning)
+        if (DebugFlags.raw.isEmpty()) return l
         return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, l.sharpen, l.sharpenCore, l.curve,
             denoise = if (DebugFlags.on("nofinish")) 0f else l.denoise, detail = l.detail, detailCore = l.detailCore, clarity = l.clarity, chromaSmoothing = l.chromaSmoothing,
             localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone)
@@ -32,7 +48,7 @@ object BurstRender {
     /** What the average of the picture is brought to, linear: lower than middle grey, as the Pixel app's pictures sit. */
     const val EXPOSURE_TARGET = 0.12f
 
-    fun settings(result: TotalCaptureResult, chars: CameraCharacteristics, black: IntArray): IxRenderSettings {
+    fun settings(result: TotalCaptureResult, chars: CameraCharacteristics, black: IntArray, tuning: LookTuning = LookTuning()): IxRenderSettings {
         val cfa = when (chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)) {
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG -> IxCfa.GRBG
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG -> IxCfa.GBRG
@@ -50,7 +66,7 @@ object BurstRender {
             for (r in 0 until m.rowCount) for (c in 0 until m.columnCount) for (k in 0 until 4) gains[(r * m.columnCount + c) * 4 + k] = m.getGainFactor(k, c, r)
             IxShadingMap(m.columnCount, m.rowCount, gains)
         }
-        return IxRenderSettings(cfa, black, white, wb, ccm, shading, look = look())
+        return IxRenderSettings(cfa, black, white, wb, ccm, shading, look = look(tuning))
     }
 
     /** Renders the whole mosaic to a bitmap, a band of rows at a time. */

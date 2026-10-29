@@ -43,6 +43,7 @@ import com.everettpenne.glass.IosType
 import com.everettpenne.holtzman.CaptureContract
 import com.everettpenne.holtzman.camera.*
 import com.everettpenne.holtzman.save.BurstProcessor
+import com.everettpenne.holtzman.save.BurstRender
 import com.everettpenne.holtzman.save.NoiseCalibration
 import com.everettpenne.holtzman.save.PhotoSaver
 import com.everettpenne.holtzman.save.UltraHdr
@@ -99,6 +100,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // the computational burst is the normal way to take a photo; a setting turns it off for a quick single frame
     var burst by remember { mutableStateOf(prefs.getBoolean("computational", true)) }
     LaunchedEffect(raw, hdr, burst) { prefs.edit().putBoolean("raw", raw).putBoolean("hdr", hdr).putBoolean("computational", burst).apply() }
+    // the finish controls in Settings (computational photos only): texture -1..1, grain 0..1; each shot takes the values it was taken with
+    var texture by remember { mutableStateOf(prefs.getFloat("texture", 0f)) }
+    var grain by remember { mutableStateOf(prefs.getFloat("grain", BurstRender.LookTuning.DEFAULT_GRAIN)) }
+    LaunchedEffect(texture, grain) { prefs.edit().putFloat("texture", texture).putFloat("grain", grain).apply() }
     var dataset by remember { mutableStateOf(false) }
     var showDataset by remember { mutableStateOf(false) }
     var datasetKind by remember { mutableStateOf(com.everettpenne.holtzman.save.DatasetKind.HANDHELD) }
@@ -200,13 +205,14 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         // each frame is uploaded to the GPU and scored on the processing thread as it arrives, so the merge starts with that already done
         val prep = com.everettpenne.holtzman.save.BurstPrep()
+        val tuning = BurstRender.LookTuning(texture, grain)
         controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
             stamp("all 6 frames in memory")
             scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
             scope.launch(burstQueue) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
                 val tShot = System.currentTimeMillis()
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr, prep = prep) }.also { prep.close() }
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr, prep = prep, tuning = tuning) }.also { prep.close() }
                 if (context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("keepRaw", false) || com.everettpenne.holtzman.save.DebugFlags.on("keepraw")) {
                     runCatching {
                         val name = com.everettpenne.holtzman.camera.captureBaseName(tShot, java.util.TimeZone.getDefault().getOffset(tShot).toLong())
@@ -421,6 +427,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
         raw = raw, onRaw = { raw = it },
+        texture = texture, onTexture = { texture = it }, grain = grain, onGrain = { grain = it },
         datasetOn = dataset, datasetKind = datasetKind.label, datasetSaved = datasetSaved,
         onDataset = { showSettings = false; showDataset = true },
         onReport = { showSettings = false; showReport = true },

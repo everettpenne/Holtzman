@@ -27,7 +27,7 @@ class BurstOutcome(val jpeg: Uri, val dng: Uri?, val referenceJpeg: Uri?, val re
  * frame on its own.
  */
 class BurstProcessor(private val saver: PhotoSaver, private val context: android.content.Context? = null) {
-    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null): BurstOutcome {
+    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null, tuning: BurstRender.LookTuning = BurstRender.LookTuning()): BurstOutcome {
         val started = System.nanoTime()
         run {
             val planes = frames.map { f ->
@@ -76,7 +76,7 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             } else null
             if (saveDng) Log.i("HoltzmanTiming", "merged DNG written in ${(System.nanoTime() - tDng) / 1_000_000} ms")
             // stage 3: render the merged picture (and, when asked, the unmerged reference frame the same way, so the two can be compared fairly)
-            val settings = BurstRender.settings(frames[ref].result, characteristics, black)
+            val settings = BurstRender.settings(frames[ref].result, characteristics, black, tuning)
             val exposure = com.everettpenne.ix.IxRender.autoExposure(merged.samples, merged.width, merged.height, settings, BurstRender.EXPOSURE_TARGET)
             val refRaw = if (saveReference) ShortArray(merged.width * merged.height).also { frames[ref].pixels.rewind(); frames[ref].pixels.order(ByteOrder.nativeOrder()).asShortBuffer().get(it) } else null
             val tRender = System.nanoTime()
