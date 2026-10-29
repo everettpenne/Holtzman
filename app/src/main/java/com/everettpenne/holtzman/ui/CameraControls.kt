@@ -132,6 +132,7 @@ fun PhotoSettingsSheet(
     grid: Boolean, onGrid: (Boolean) -> Unit,
     level: Boolean, onLevel: (Boolean) -> Unit, histogram: Boolean, onHistogram: (Boolean) -> Unit,
     longCapture: Boolean, onLongCapture: (Boolean) -> Unit,
+    instant: Boolean, onInstant: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     GlassSheet(onDismiss) {
@@ -152,6 +153,12 @@ fun PhotoSettingsSheet(
                     FlashMode.entries.forEach { f -> GlassChip(f == flash, { onFlash(f) }) { Text(f.label, maxLines = 1, softWrap = false, modifier = Modifier.padding(horizontal = 8.dp)) } }
                 }
             }
+            GlassSectionHeader("Capture")
+            Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(!instant, { onInstant(false) }) { Text("Standard", modifier = Modifier.padding(horizontal = 8.dp)) }
+                GlassChip(instant, { onInstant(true) }) { Text("Instant", modifier = Modifier.padding(horizontal = 8.dp)) }
+            }
+            Text("Instant keeps the last frames from the camera, so a photo is the moment you press, with no focusing or capture wait. Autofocus is the camera's own continuous focus.", style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
             GlassSectionHeader("Low light")
             Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GlassChip(!longCapture, { onLongCapture(false) }) { Text("Standard", modifier = Modifier.padding(horizontal = 8.dp)) }

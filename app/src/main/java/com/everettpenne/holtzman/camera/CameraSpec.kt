@@ -201,3 +201,26 @@ fun shakeAdjusted(exposureNs: Long, iso: Int, limitNs: Long, isoMax: Int): Pair<
     val newNs = (exposureNs.toDouble() * iso / newIso).toLong()
     return newNs to newIso
 }
+
+/** What the controller knows about a frame in the zero-shutter-lag ring: when it was taken and how it was exposed. */
+class RingEntry(val timestampNs: Long, val exposureNs: Long, val iso: Int)
+
+private fun sameExposure(a: RingEntry, b: RingEntry): Boolean =
+    Math.abs(a.exposureNs.toDouble() / b.exposureNs - 1.0) < 0.03 && Math.abs(a.iso.toDouble() / b.iso - 1.0) < 0.03
+
+/**
+ * Which frames of the ring (oldest first) make the burst: the newest frame and those before it that were exposed the same way (the merge assumes equal
+ * exposures, and automatic exposure may still be settling), with no gap between neighbours longer than [maxGapNs] (a stall in the stream), at most
+ * [count]. Returns their indices, oldest first.
+ */
+fun pickRingFrames(ring: List<RingEntry>, count: Int, maxGapNs: Long = 100_000_000L): List<Int> {
+    if (ring.isEmpty()) return emptyList()
+    val newest = ring.last(); val picked = ArrayList<Int>()
+    var i = ring.size - 1; var later = newest.timestampNs
+    while (i >= 0 && picked.size < count) {
+        val e = ring[i]
+        if (!sameExposure(e, newest) || later - e.timestampNs > maxGapNs) break
+        picked.add(i); later = e.timestampNs; i--
+    }
+    return picked.reversed()
+}

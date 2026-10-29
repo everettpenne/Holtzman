@@ -54,7 +54,7 @@ enum class Lens { BACK, FRONT }
  * The still stream is the largest 4:3 JPEG the camera offers. Preview and still share the shape, so the frame on screen is the frame saved.
  */
 class CameraController(private val context: Context) {
-    companion object { const val TAG = "HoltzmanCamera"; const val BURST_FRAMES = 6; /** The most shake (rad/s) the long capture is allowed: a held phone is about 0.01 to 0.03, a phone on a support under 0.003. */ const val LONG_CAPTURE_MAX_SHAKE = 0.012f }
+    companion object { const val TAG = "HoltzmanCamera"; const val BURST_FRAMES = 6; /** Frames the zero-shutter-lag ring keeps (a little over a quarter of a second at 30 frames a second). */ const val RING_FRAMES = 8; /** The most shake (rad/s) the long capture is allowed: a held phone is about 0.01 to 0.03, a phone on a support under 0.003. */ const val LONG_CAPTURE_MAX_SHAKE = 0.012f }
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("holtzman-camera").also { it.start() }
@@ -106,6 +106,14 @@ class CameraController(private val context: Context) {
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
             if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE), result.frameNumber)
             latestFaces = facesOf(result)
+            if (zslEnabled) {
+                result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { ringResults[it] = result }
+                if (ringResults.size > RING_FRAMES * 3) { val oldest = ring.firstOrNull()?.timestamp ?: Long.MAX_VALUE; ringResults.keys.filter { it < oldest }.forEach { ringResults.remove(it) } }
+                ringFrameCount++
+                updateAutoRegion()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - ringFpsSince >= 4000) { Log.i(TAG, "instant capture: %.1f frames/s into the ring, ${ring.size} kept".format(java.util.Locale.ROOT, ringFrameCount * 1000f / (now - ringFpsSince))); ringFrameCount = 0; ringFpsSince = now }
+            }
             // the automatic white balance's own answer, kept so the warmth control can start from it
             result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestGains = it }
             result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestTransform = it }
@@ -119,6 +127,114 @@ class CameraController(private val context: Context) {
     private var heldTransform: android.hardware.camera2.params.ColorSpaceTransform? = null
     @Volatile private var warmthFactor = 1f
     @Volatile private var evSteps = 0
+
+    // ---- Instant capture (zero shutter lag). With it on, every preview frame is also a RAW frame; the newest [RING_FRAMES] are kept, and pressing the
+    // shutter makes the burst from the newest ones that were exposed alike: no focusing step and no capture wait, the picture is the moment of the press.
+    private class RingFrame(val image: android.media.Image, val timestamp: Long)
+    private val ring = java.util.ArrayDeque<RingFrame>()   // guarded by itself: the camera thread fills it, close() empties it
+    private val ringResults = HashMap<Long, TotalCaptureResult>()   // camera thread only
+    @Volatile var zslEnabled = false; private set
+    private var ringFrameCount = 0; private var ringFpsSince = android.os.SystemClock.elapsedRealtime()
+
+    private fun installRingListener() {
+        rawReader?.setOnImageAvailableListener({ r ->
+            try {
+                val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
+                synchronized(ring) { ring.addLast(RingFrame(img, img.timestamp)); while (ring.size > RING_FRAMES) ring.removeFirst().image.close() }
+            } catch (e: IllegalStateException) {   // every buffer is held: let go of the oldest and carry on
+                synchronized(ring) { ring.pollFirst()?.image?.close() }
+            }
+        }, handler)
+    }
+
+    // Instant capture has no focusing step before the shot, so the camera's continuous autofocus is aimed where the shot would have aimed it: at the largest
+    // face, else the middle of the frame (whole-frame autofocus prefers the far scene: a fresh scan once focused on a factory behind a desk of near objects).
+    @Volatile private var autoRegion: IntArray? = null
+    private var autoRegionSince = 0L
+
+    private fun desiredAutoRegion(): IntArray? {
+        val chars = characteristics ?: return null
+        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val face = largestFace(latestFaces)
+        val r = if (face != null) faceRegion(face, array.width(), array.height(), 0.1f)
+                else meteringBox(sensorPoint(0.5f, 0.5f, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, zoom), array.width(), array.height())
+        return intArrayOf(r[0] + array.left, r[1] + array.top, r[2] + array.left, r[3] + array.top)
+    }
+
+    /** Called with every preview result while instant capture is on: moves the autofocus area when the face (or the lack of one) moved it by a fair amount, at most twice a second. */
+    private fun updateAutoRegion() {
+        if (manualFocus != null || focusRegion != null) { autoRegion = null; return }
+        val want = desiredAutoRegion() ?: return
+        val have = autoRegion
+        val now = android.os.SystemClock.elapsedRealtime()
+        val moved = have == null || Math.abs(want[0] - have[0]) + Math.abs(want[1] - have[1]) > (want[2] - want[0]) / 3
+        if (moved && now - autoRegionSince > 500) { autoRegion = want; autoRegionSince = now; resend() }
+    }
+
+    private val copyPool by lazy { java.util.concurrent.Executors.newFixedThreadPool(3) }
+
+    /** One RAW image copied into tight rows in a buffer of its own (shared memory when [offHeap]), and the image given back to the camera. */
+    private fun copyRaw(img: android.media.Image, offHeap: Boolean): Triple<java.nio.ByteBuffer, android.os.SharedMemory?, Pair<Int, Int>> {
+        val plane = img.planes[0]; val w = img.width; val h = img.height
+        val shm = if (offHeap) android.os.SharedMemory.create("holtzman-frame", w * h * 2) else null
+        val tight = (shm?.mapReadWrite() ?: java.nio.ByteBuffer.allocateDirect(w * h * 2)).order(java.nio.ByteOrder.nativeOrder())
+        val src = plane.buffer.duplicate()   // a view of its own: the copies run on several threads
+        if (plane.rowStride == w * 2) { src.rewind(); src.limit(w * h * 2); tight.put(src) }
+        else for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src) }
+        tight.rewind(); img.close()
+        return Triple(tight, shm, w to h)
+    }
+
+    private fun clearRing() { synchronized(ring) { ring.forEach { runCatching { it.image.close() } }; ring.clear() }; ringResults.clear() }
+
+    /** Whether a shot made from the ring would have frames to use right now (for the screen to decide between the ring and an ordinary burst). */
+    val ringReady: Boolean get() = zslEnabled && synchronized(ring) { ring.size >= 4 }
+
+    /**
+     * The burst for a press of the shutter, from the ring: the newest frames that share one exposure ([pickRingFrames]), copied out (so the camera gets its
+     * buffers back) and delivered like [captureBurst]'s. If autofocus is still scanning it waits up to 400 ms for it to settle, and if fewer than six frames
+     * match it waits up to 600 ms for the stream to supply them; with fewer than three it reports a failure. [onFrame] and [release] are as for [captureBurst].
+     */
+    fun captureFromRing(onResult: (List<BurstFrame>) -> Unit, onError: (String) -> Unit, offHeap: Boolean = false,
+                        onFrame: ((Int, java.nio.ByteBuffer, Int, Int) -> Unit)? = null, release: ((Runnable) -> Unit)? = null) {
+        if (!zslEnabled) return onError("Instant capture is off.")
+        val started = android.os.SystemClock.uptimeMillis()
+        fun attempt() {
+            if (!zslEnabled) return onError("The camera closed.")
+            val waited = android.os.SystemClock.uptimeMillis() - started
+            val af = autoSample?.afState
+            val scanning = af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN || af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN
+            val picked: List<RingFrame>
+            synchronized(ring) {
+                val frames = ring.filter { ringResults.containsKey(it.timestamp) }
+                val entries = frames.map { f -> val r = ringResults.getValue(f.timestamp); RingEntry(f.timestamp, r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 1L, r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 1) }
+                picked = pickRingFrames(entries, BURST_FRAMES).map { frames[it] }
+            }
+            if ((scanning && waited < 400) || (picked.size < BURST_FRAMES && waited < 600)) { handler.postDelayed({ attempt() }, 30); return }
+            if (picked.size < 3) return onError("The camera's stream was not steady enough for a photo: try again.")
+            synchronized(ring) { ring.removeAll(picked.toSet()) }   // these frames now belong to the photo
+            val frames = ArrayList<BurstFrame>(picked.size); val results = picked.map { ringResults.getValue(it.timestamp) }
+            val tCopy = android.os.SystemClock.elapsedRealtime()
+            try {
+                // the camera's buffers are slow for the CPU to read (about 45 ms a frame), so the frames are copied side by side
+                val copies = picked.map { f -> copyPool.submit(java.util.concurrent.Callable { copyRaw(f.image, offHeap) }) }
+                for ((i, c) in copies.withIndex()) {
+                    val (tight, shm, size) = c.get()
+                    frames += BurstFrame(tight, size.first, size.second, results[i], shm)
+                    onFrame?.invoke(i, tight, size.first, size.second)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "could not copy the ring's frames", t)
+                picked.forEach { runCatching { it.image.close() } }
+                val free = Runnable { frames.forEach { it.free() } }
+                if (release != null) release(free) else free.run()
+                return onError("Out of memory keeping the burst's frames.")
+            }
+            Log.i(TAG, "instant capture: ${frames.size} frames from the ring after waiting $waited ms; copying them took ${android.os.SystemClock.elapsedRealtime() - tCopy} ms ")
+            onResult(frames)
+        }
+        handler.post { attempt() }
+    }
 
     // Manual exposure and focus (the Pro controls). Setting only the ISO or only the shutter keeps the picture as bright as automatic exposure had it at the
     // moment the first was set (the other is worked out), so it is "ISO priority" or "shutter priority"; both set is fully manual.
@@ -227,7 +343,7 @@ class CameraController(private val context: Context) {
      * once frames are flowing; [onError] says what went wrong.
      */
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
-    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, onReady: () -> Unit, onError: (String) -> Unit) {
+    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, zsl: Boolean = false, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
         shake.start()
         val gen = ++generation
@@ -247,7 +363,8 @@ class CameraController(private val context: Context) {
         flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension; videoQuality = video
         jpegReader = still?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.JPEG, 3) }
-        rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, if (burst) BURST_FRAMES + 1 else 3) }
+        zslEnabled = zsl && raw != null && extension == null && video == null
+        rawReader = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, if (zslEnabled) RING_FRAMES + 3 else if (burst) BURST_FRAMES + 1 else 3) }
 
         manager.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -267,7 +384,10 @@ class CameraController(private val context: Context) {
                 if (gen != generation) { s.close(); return }
                 session = s
                 try {
-                    repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface!!) }
+                    repeatingTemplate = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                        addTarget(previewSurface!!)
+                        if (zslEnabled) { addTarget(rawReader!!.surface); installRingListener() }   // every frame is also a RAW frame, kept in the ring
+                    }
                     val request = previewRequest()
                     s.setRepeatingRequest(request, previewCallback, handler)
                     onReady()
@@ -322,7 +442,12 @@ class CameraController(private val context: Context) {
             if (r != null) {
                 val area = arrayOf(android.hardware.camera2.params.MeteringRectangle(r[0], r[1], r[2] - r[0], r[3] - r[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX))
                 b.set(CaptureRequest.CONTROL_AF_REGIONS, area); b.set(CaptureRequest.CONTROL_AE_REGIONS, area)
-            } else { b.set(CaptureRequest.CONTROL_AF_REGIONS, null); b.set(CaptureRequest.CONTROL_AE_REGIONS, null) }
+            } else {
+                val a = autoRegion
+                if (zslEnabled && manualFocus == null && a != null) b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(android.hardware.camera2.params.MeteringRectangle(a[0], a[1], a[2] - a[0], a[3] - a[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX)))
+                else b.set(CaptureRequest.CONTROL_AF_REGIONS, null)
+                b.set(CaptureRequest.CONTROL_AE_REGIONS, null)
+            }
         }
         return b.build()
     }
@@ -603,6 +728,7 @@ class CameraController(private val context: Context) {
                      onFrame: ((Int, java.nio.ByteBuffer, Int, Int) -> Unit)? = null, release: ((Runnable) -> Unit)? = null,
                      /** In dim light, with the phone steady: more frames, each exposed longer at a lower ISO (see below). [onPlan] hears how many frames and how many seconds the capture will take. */
                      longCapture: Boolean = false, onPlan: ((Int, Float) -> Unit)? = null) {
+        if (zslEnabled) return onError("Instant capture is on: a standard burst needs it off (Photo settings > Capture).")
         val camera = device ?: return onError("The camera is not open.")
         val s = session ?: return onError("The camera is not ready.")
         val raws = rawReader ?: return onError("This camera has no RAW stream for a burst.")
@@ -686,7 +812,8 @@ class CameraController(private val context: Context) {
                     val shm = if (offHeap) android.os.SharedMemory.create("holtzman-frame", w * h * 2) else null
                     val tight = (shm?.mapReadWrite() ?: java.nio.ByteBuffer.allocateDirect(w * h * 2)).order(java.nio.ByteOrder.nativeOrder())
                     val src = plane.buffer
-                    for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src); src.clear() }
+                    if (plane.rowStride == w * 2) { src.rewind(); src.limit(w * h * 2); tight.put(src); src.clear() }   // no padding: one copy
+                    else for (y in 0 until h) { src.position(y * plane.rowStride); src.limit(y * plane.rowStride + w * 2); tight.put(src); src.clear() }
                     tight.rewind()
                     img.close()
                     synchronized(images) { dims[0] = w; dims[1] = h; images += tight; owners += shm; onFrame?.invoke(images.size - 1, tight, w, h); check() }
@@ -714,6 +841,8 @@ class CameraController(private val context: Context) {
         }
         handler.removeCallbacks(afReset); repeatingTemplate = null
         generation++   // anything still opening is now stale
+        zslEnabled = false; autoRegion = null
+        clearRing()
         runCatching { extensionSession?.close() }; extensionSession = null; extension = null
         runCatching { session?.close() }; session = null
         runCatching { device?.close() }; device = null

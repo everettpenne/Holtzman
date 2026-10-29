@@ -124,6 +124,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val warmthEff = if (kotlin.math.abs(warmthValue) < 1.5f) 0f else warmthValue
     var cropRatio by remember { mutableStateOf(PhotoRatio.entries.getOrElse(prefs.getInt("ratio", 0)) { PhotoRatio.FULL }) }
     var showPhotoSettings by remember { mutableStateOf(false) }
+    // Instant capture: the burst comes from frames already kept by the camera (the Pixel camera app's zero shutter lag). The longer low-light capture needs its own exposures, so it turns this off.
+    var instant by remember { mutableStateOf(prefs.getBoolean("instant", true)) }
+    LaunchedEffect(instant) { prefs.edit().putBoolean("instant", instant).apply() }
     var longCapture by remember { mutableStateOf(prefs.getBoolean("longCapture", false)) }
     LaunchedEffect(longCapture) { prefs.edit().putBoolean("longCapture", longCapture).apply() }
     var levelOn by remember { mutableStateOf(prefs.getBoolean("level", false)) }
@@ -199,12 +202,12 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality) {
+    LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality, instant, longCapture) {
         val surface = previewSurface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
         previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
-        controller.open(lens, surface, raw || hdr || computational || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational || dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, raw || hdr || computational || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational || dataset, instant && !longCapture && computational && !dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -235,7 +238,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val prep = com.everettpenne.holtzman.save.BurstPrep()
         val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
-        controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, longCapture = longCapture, onPlan = { n, seconds -> if (n > 6) scope.launch(Dispatchers.Main) { status = "Low light: hold still for %.0f s".format(java.util.Locale.ROOT, seconds + 1f) } }, onFrame = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }, release = { r -> burstExecutor.execute(r) }, onResult = { frames ->
+        val deliver: (List<com.everettpenne.holtzman.camera.BurstFrame>) -> Unit = { frames ->
             stamp("all frames in memory")
             scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
             scope.launch(burstQueue) {
@@ -256,12 +259,20 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
-        }, onError = { burstExecutor.execute { prep.close() }; scope.launch(Dispatchers.Main) { busy = false; status = it } }) }
+        }
+        val fail: (String) -> Unit = { burstExecutor.execute { prep.close() }; scope.launch(Dispatchers.Main) { busy = false; status = it } }
+        val frameHook: (Int, java.nio.ByteBuffer, Int, Int) -> Unit = { _, pixels, w, h -> burstExecutor.execute { prep.frame(pixels, w, h) } }
+        if (controller.zslEnabled) {
+            // instant capture: the frames are already in the ring, so there is nothing to wait for
+            status = "Saving…"
+            controller.captureFromRing(offHeap = true, onFrame = frameHook, release = { r -> burstExecutor.execute(r) }, onResult = deliver, onError = fail)
+        } else controller.focusForShot { stamp("focus done, burst requested"); controller.captureBurst(offHeap = true, longCapture = longCapture, onPlan = { n, seconds -> if (n > 6) scope.launch(Dispatchers.Main) { status = "Low light: hold still for %.0f s".format(java.util.Locale.ROOT, seconds + 1f) } }, onFrame = frameHook, release = { r -> burstExecutor.execute(r) }, onResult = deliver, onError = fail) }
     }
 
     // Calibration for the burst merge's noise model: two frames at each of several ISOs, same brightness, phone held still on a still scene
     fun calibrateNoise() {
         if (busy) return
+        if (controller.zslEnabled) { status = "Turn Instant capture off to calibrate"; return }
         busy = true; status = "Calibrating: keep the phone still"
         val chars = controller.characteristics ?: run { busy = false; return }
         val steps = listOf(100, 200, 400, 800, 1600, 3200)
@@ -501,7 +512,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     if (showPhotoSettings) PhotoSettingsSheet(
         ratio = cropRatio, onRatio = { cropRatio = it }, ratioApplies = computational && rawAvailable,
         timer = timer, onTimer = { timer = it }, flash = flash, onFlash = { flash = it }, flashAvailable = flashAvailable,
-        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, longCapture = longCapture, onLongCapture = { longCapture = it }, onDismiss = { showPhotoSettings = false })
+        grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it }, longCapture = longCapture, onLongCapture = { longCapture = it }, instant = instant && !longCapture, onInstant = { instant = it; if (it) longCapture = false }, onDismiss = { showPhotoSettings = false })
     if (showSettings) SettingsSheet(
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
