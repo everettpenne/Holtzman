@@ -166,25 +166,47 @@ fun rememberPeaking(view: TextureView?, enabled: Boolean): State<Bitmap?> {
 }
 
 /**
- * The viewfinder's version of a look, as a colour matrix over the camera's own picture: saturation, a gentler or stronger contrast about mid grey, the
- * look's own warmth, and lifted blacks. It stands in for the real thing (the saved photo goes through the whole pipeline), so it is close, not exact; null
- * for the standard look, which needs nothing. The user's own warmth, exposure and shadows are not in it: warmth and exposure already change the camera's
- * picture, and shadows only show in the saved photo.
+ * The viewfinder's version of a style, as a 4x5 colour matrix over the camera's own picture: saturation, a gentler or stronger contrast about mid grey,
+ * the style's own warmth, lifted blacks, all scaled by the style's [intensity], and the Palette's [tone] (-1 darker and punchier .. 1 lighter and softer).
+ * It stands in for the real thing (the saved photo goes through the whole pipeline), so it is close, not exact; null when it would change nothing. The
+ * user's own warmth is not in it: warmth already changes the camera's picture.
  */
-fun lookFilter(preset: com.everettpenne.holtzman.save.BurstRender.LookPreset): android.graphics.ColorMatrixColorFilter? {
-    if (preset == com.everettpenne.holtzman.save.BurstRender.LookPreset.STANDARD) return null
+fun lookMatrix(preset: com.everettpenne.holtzman.save.BurstRender.LookPreset, intensity: Float = 1f, tone: Float = 0f): FloatArray? {
+    if (preset == com.everettpenne.holtzman.save.BurstRender.LookPreset.STANDARD && tone == 0f) return null
+    val i = intensity.coerceIn(0f, 1f)
     val base = com.everettpenne.holtzman.save.BurstRender.LOOK
+    fun mix(b: Float, styled: Float?): Float = b + ((styled ?: b) - b) * i
     val m = android.graphics.ColorMatrix()
-    m.setSaturation(((preset.saturation ?: base.saturation) / base.saturation).coerceIn(0f, 1.6f))
-    val contrast = 1f + ((preset.contrast ?: base.contrast) - base.contrast) * 0.5f
-    val k = 1f + 0.006f * preset.warmth
-    val lift = ((preset.blackPoint ?: base.blackPoint) - base.blackPoint).coerceAtLeast(0f)
+    m.setSaturation((mix(base.saturation, preset.saturation) / base.saturation).coerceIn(0f, 1.6f))
+    val contrast = (1f + (mix(base.contrast, preset.contrast) - base.contrast) * 0.5f) * (1f - 0.15f * tone)
+    val k = 1f + 0.006f * preset.warmth * i
+    val lift = (mix(base.blackPoint, preset.blackPoint) - base.blackPoint).coerceAtLeast(0f)
     val scale = contrast * (1f - lift)
-    val shift = 128f * (1f - contrast) * (1f - lift) + 255f * lift
+    val shift = 128f * (1f - contrast) * (1f - lift) + 255f * lift + 10f * tone
     m.postConcat(android.graphics.ColorMatrix(floatArrayOf(
         scale * k, 0f, 0f, 0f, shift,
         0f, scale, 0f, 0f, shift,
         0f, 0f, scale / k, 0f, shift,
         0f, 0f, 0f, 1f, 0f)))
-    return android.graphics.ColorMatrixColorFilter(m)
+    return m.array
+}
+
+fun lookFilter(preset: com.everettpenne.holtzman.save.BurstRender.LookPreset, intensity: Float = 1f, tone: Float = 0f): android.graphics.ColorMatrixColorFilter? =
+    lookMatrix(preset, intensity, tone)?.let { android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix(it)) }
+
+/** A small copy of the viewfinder (96 x 128), refreshed twice a second while [enabled], for the style cards to show each style on the live picture. */
+@Composable
+fun rememberStyleThumb(view: TextureView?, enabled: Boolean): State<Bitmap?> {
+    val state = remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(view, enabled) {
+        if (!enabled || view == null) { return@LaunchedEffect }
+        while (isActive) {
+            if (view.isAvailable) {
+                val b = Bitmap.createBitmap(96, 128, Bitmap.Config.ARGB_8888)
+                if (runCatching { view.getBitmap(b) }.isSuccess) state.value = b
+            }
+            delay(500)
+        }
+    }
+    return state
 }

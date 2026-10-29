@@ -113,6 +113,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var evValue by remember { mutableStateOf(0f) }
     var shadowsValue by remember { mutableStateOf(0f) }
     var warmthValue by remember { mutableStateOf(0f) }
+    var styleIntensity by remember { mutableStateOf(1f) }
     // the Pro controls: slider positions 0..1, null = left to the camera
     var isoT by remember { mutableStateOf<Float?>(null) }
     var shutterT by remember { mutableStateOf<Float?>(null) }
@@ -162,8 +163,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val previewSurface = remember(previewTexture) { previewTexture?.let { android.view.Surface(it) } }
     DisposableEffect(previewSurface) { onDispose { previewSurface?.release() } }
     // the look's colours, live on the viewfinder (an approximation: the saved photo gets the real pipeline)
-    LaunchedEffect(previewView, preset) {
-        val f = lookFilter(preset)
+    LaunchedEffect(previewView, preset, styleIntensity, shadowsEff) {
+        val f = lookFilter(preset, styleIntensity, (shadowsEff / 20f).coerceIn(-1f, 1f))
         previewView?.setLayerPaint(if (f == null) null else android.graphics.Paint().apply { colorFilter = f })
     }
     var status by remember { mutableStateOf<String?>(null) }
@@ -236,7 +237,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val orientation = jpegOrientation(chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, deviceDegrees, lens == Lens.FRONT)
         // each frame is uploaded to the GPU and scored on the processing thread as it arrives, so the merge starts with that already done
         val prep = com.everettpenne.holtzman.save.BurstPrep()
-        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, manualExposure = manualExposureOn)
+        val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, intensity = styleIntensity, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
         val deliver: (List<com.everettpenne.holtzman.camera.BurstFrame>) -> Unit = { frames ->
             stamp("all frames in memory")
@@ -394,6 +395,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         // the level line and the histogram, over the picture
         val roll by rememberRollDegrees(levelOn && !videoMode)
         val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
+        val styleThumb by rememberStyleThumb(previewView, showControls && controlTab == ControlTab.LOOK && !videoMode)
         val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
         Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).fillMaxWidth().aspectRatio(ratio)) {
             if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
@@ -444,7 +446,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             // the control of the open tab, over the picture's lower edge (the Pixel camera app puts its sliders just above the shutter)
             if (showControls && !videoMode) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp, start = 14.dp, end = 14.dp)) {
                 when (controlTab) {
-                    ControlTab.LOOK -> LookChips(preset, { preset = it })
+                    ControlTab.LOOK -> StylesPanel(preset, { preset = it }, styleIntensity, { styleIntensity = it }, (warmthValue / 20f).coerceIn(-1f, 1f), (shadowsValue / 20f).coerceIn(-1f, 1f), { c, t -> warmthValue = c * 20f; shadowsValue = t * 20f }, styleThumb)
                     ControlTab.EXPOSURE -> ControlSlider(evValue, -2f..2f, "%+.1f EV".format(java.util.Locale.ROOT, evEff), Icons.Rounded.Remove, Icons.Rounded.Add, "Exposure", { evValue = it })
                     ControlTab.SHADOWS -> ControlSlider(shadowsValue, -20f..20f, "%+d".format(shadowsEff.toInt()), Icons.Rounded.DarkMode, Icons.Rounded.LightMode, "Shadows", { shadowsValue = it })
                     ControlTab.SHUTTER -> ControlSlider(shutterT ?: 0.5f, 0f..1f, shutterT?.let { shutterLabel(shutterNsFromT(it, controller.exposureRangeNs)) } ?: controller.currentExposure?.let { shutterLabel(it.second) } ?: "Auto", Icons.Rounded.Speed, Icons.Rounded.HourglassBottom, "Shutter", { shutterT = it }, isAuto = shutterT == null, onAuto = { shutterT = null })
@@ -499,7 +501,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 Box(Modifier.size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .5f), CircleShape))
             }
             val tabs = ControlTab.entries.filter { it != ControlTab.EXPOSURE || !manualExposureOn }   // a hand-set exposure has no compensation
-            ControlTabs(controlTab.takeIf { it in tabs } ?: ControlTab.LOOK, changed, tabs, { controlTab = it }, onReset = { preset = BurstRender.LookPreset.STANDARD; evValue = 0f; shadowsValue = 0f; warmthValue = 0f; isoT = null; shutterT = null; focusT = null })
+            ControlTabs(controlTab.takeIf { it in tabs } ?: ControlTab.LOOK, changed, tabs, { controlTab = it }, onReset = { preset = BurstRender.LookPreset.STANDARD; styleIntensity = 1f; evValue = 0f; shadowsValue = 0f; warmthValue = 0f; isoT = null; shutterT = null; focusT = null })
         } else Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp, start = 32.dp, end = 32.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             BottomButton(Icons.Rounded.Settings, "Photo settings", on = false) { showPhotoSettings = true }
             if (!videoMode) BottomButton(Icons.Rounded.Tune, "Controls", on = false, dot = changed.isNotEmpty()) { showControls = true } else Spacer(Modifier.size(46.dp))

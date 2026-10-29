@@ -27,9 +27,12 @@ object BurstRender {
     enum class LookPreset(val label: String, val saturation: Float? = null, val contrast: Float? = null, val blackPoint: Float? = null,
                           val texture: Float = 0f, val grain: Float = 0f, val warmth: Float = 0f, val shadows: Float = 0f) {
         STANDARD("Standard"),
-        VIVID("Vivid", saturation = 1.15f, contrast = 0.55f, texture = 0.15f),
+        VIVID("Vibrant", saturation = 1.15f, contrast = 0.55f, texture = 0.15f),
+        RICH("Rich Contrast", saturation = 1.0f, contrast = 0.68f, texture = 0.1f, shadows = -4f),
         WARM("Warm", saturation = 0.95f, warmth = 10f, shadows = 3f),
         COOL("Cool", saturation = 0.92f, warmth = -10f, texture = 0.1f),
+        DRAMATIC("Dramatic", saturation = 0.82f, contrast = 0.78f, blackPoint = 0.05f, texture = 0.25f, warmth = -3f, shadows = -9f),
+        QUIET("Quiet", saturation = 0.8f, contrast = 0.28f, texture = -0.25f, warmth = 2f, shadows = 4f),
         SOFT("Soft", saturation = 0.85f, contrast = 0.25f, texture = -0.5f, shadows = 6f, grain = -0.1f),
         FILM("Film", saturation = 0.72f, contrast = 0.3f, blackPoint = 0.07f, texture = -0.15f, grain = 0.25f, warmth = 4f),
         MONO("Mono", saturation = 0f, contrast = 0.5f, grain = 0.15f),
@@ -45,20 +48,24 @@ object BurstRender {
      */
     class LookTuning(val texture: Float = 0f, val grain: Float = DEFAULT_GRAIN, val preset: LookPreset = LookPreset.STANDARD,
                      val exposureEv: Float = 0f, val shadows: Float = 0f, val warmth: Float = 0f,
+                     /** How much of the style's own difference from the standard look is applied, 0..1 (the Photographic Styles intensity); the user's own shadows, warmth, texture and grain are not scaled. */
+                     val intensity: Float = 1f,
                      /** The ISO and/or shutter were set by hand: the picture keeps the brightness they gave instead of being brought to the usual one. */
                      val manualExposure: Boolean = false) {
         /** The white balance shift as a multiplier of the red gain (the blue gain is divided by it). */
-        val warmthFactor: Float get() = 1f + 0.006f * (warmth + preset.warmth).coerceIn(-40f, 40f)
+        val warmthFactor: Float get() = 1f + 0.006f * (warmth + preset.warmth * intensity).coerceIn(-40f, 40f)
         companion object { const val DEFAULT_GRAIN = 0.2f; const val GRAIN_LEVELS = 6f }
     }
 
     private fun tuned(l: com.everettpenne.ix.IxLook, t: LookTuning): com.everettpenne.ix.IxLook {
-        val x = (t.texture + t.preset.texture).coerceIn(-1f, 1f)
-        return com.everettpenne.ix.IxLook(l.blackPoint.let { t.preset.blackPoint ?: it }, t.preset.contrast ?: l.contrast, t.preset.saturation ?: l.saturation,
+        val i = t.intensity.coerceIn(0f, 1f)
+        fun mix(base: Float, styled: Float?): Float = base + ((styled ?: base) - base) * i
+        val x = (t.texture + t.preset.texture * i).coerceIn(-1f, 1f)
+        return com.everettpenne.ix.IxLook(mix(l.blackPoint, t.preset.blackPoint), mix(l.contrast, t.preset.contrast), mix(l.saturation, t.preset.saturation),
             sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
             denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
-            localTone = l.localTone, grain = (t.grain + t.preset.grain).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
-            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows) / 20f).coerceIn(-1f, 1f))
+            localTone = l.localTone, grain = (t.grain + t.preset.grain * i).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
+            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows * i) / 20f).coerceIn(-1f, 1f))
     }
 
     /** [LOOK] with the user's [tuning], and any stages the debug switches turned off. */

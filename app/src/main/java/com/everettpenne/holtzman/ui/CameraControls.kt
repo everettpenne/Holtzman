@@ -39,7 +39,7 @@ enum class PhotoRatio(val label: String, val longOverShort: Float) {
 
 /** The tabs of the controls panel, opened by the button at the bottom right: one slider (or the looks) each. */
 enum class ControlTab(val label: String, val icon: ImageVector) {
-    LOOK("Look", Icons.Rounded.AutoAwesome), EXPOSURE("Exposure", Icons.Rounded.Exposure), SHADOWS("Shadows", Icons.Rounded.Contrast), WHITE_BALANCE("Warmth", Icons.Rounded.WbIncandescent),
+    LOOK("Styles", Icons.Rounded.AutoAwesome), EXPOSURE("Exposure", Icons.Rounded.Exposure), SHADOWS("Shadows", Icons.Rounded.Contrast), WHITE_BALANCE("Warmth", Icons.Rounded.WbIncandescent),
     SHUTTER("Shutter", Icons.Rounded.ShutterSpeed), ISO("ISO", Icons.Rounded.Iso), FOCUS("Focus", Icons.Rounded.CenterFocusStrong)
 }
 
@@ -102,15 +102,6 @@ fun ControlSlider(value: Float, range: ClosedFloatingPointRange<Float>, display:
             GlassSlider(value, onChange, Modifier.weight(1f), valueRange = range, description = description)
             Icon(maxIcon, null, tint = Color.White.copy(alpha = .8f), modifier = Modifier.size(20.dp))
         }
-    }
-}
-
-/** The looks, in a scrolling row of chips on the same dark pill. */
-@Composable
-fun LookChips(selected: LookPreset, onSelect: (LookPreset) -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth().clip(CircleShape).background(Color.Black.copy(alpha = .55f)).horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        LookPreset.entries.forEach { p -> GlassChip(p == selected, { onSelect(p) }) { Text(p.label, maxLines = 1, softWrap = false, modifier = Modifier.padding(horizontal = 6.dp)) } }
     }
 }
 

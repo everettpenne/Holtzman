@@ -16,8 +16,8 @@ android {
         // The Pixel 10a first (Android 17). Android 14+ because Ultra HDR needs the Gainmap API; nothing below is promised.
         minSdk = 34
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.4.0"
         // this phone (and every Pixel since the 6) is 64-bit ARM; dropping the other ABIs leaves out about 25 MB of unused native code
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
