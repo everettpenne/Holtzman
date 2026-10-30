@@ -38,8 +38,8 @@ def run_quiet(cmd, timeout=6, cwd=None):
 
 def newest_sweep():
     if not os.path.isdir(SWEEPS): return None
-    ds = sorted(d for d in os.listdir(SWEEPS) if os.path.isdir(os.path.join(SWEEPS, d)))
-    return os.path.join(SWEEPS, ds[-1]) if ds else None
+    ds = [os.path.join(SWEEPS, d) for d in os.listdir(SWEEPS) if os.path.isdir(os.path.join(SWEEPS, d))]
+    return max(ds, key=os.path.getmtime) if ds else None   # the most recently used, so a quick series is not buried under the dated overnight folders
 
 
 def sweep_status():
@@ -56,7 +56,7 @@ def sweep_status():
             m = re.findall(r'step (\d+)/(\d+)', open(tl).read()[-3000:])
             if m: step = f'step {m[-1][0]} of {m[-1][1]}'
     done = len([f for f in os.listdir(d) if f.startswith('eval_')])
-    return {'dir': d, 'running': running, 'current': cur, 'step': step, 'done': done, 'total': 8, 'report': os.path.isfile(os.path.join(d, 'sweep_report.md')), 'last': lines[-1] if lines else ''}
+    return {'dir': d, 'running': running, 'current': cur, 'step': step, 'done': done, 'total': 5 if 'quick' in os.path.basename(d) else 8, 'report': os.path.isfile(os.path.join(d, 'sweep_report.md')), 'last': lines[-1] if lines else ''}
 
 
 def dataset_status():
@@ -197,6 +197,8 @@ GROUPS = [
     {'name': '3. Denoiser training', 'blurb': 'The overnight training (several models, scored on scenes they never saw) and shipping a winner.', 'tasks': [
         {'id': 'sweep_start', 'title': 'Start the overnight training', 'desc': 'Trains and scores 8 model variants one after another (about 7 to 8 hours). Results land in a new dated folder under Code/denoiser-sweeps.', 'heavy': True,
          'confirm': 'This keeps the computer busy for about 8 hours. Start it?', 'cmd': lambda f: ['/usr/bin/caffeinate', '-i', '-s', PY, 'sweep.py', os.path.join(SWEEPS, time.strftime('%Y%m%d'))], 'cwd': 'tools/denoiser'},
+        {'id': 'sweep_quick', 'title': 'Start the quick training series', 'desc': 'Five cheaper experiments at half the training steps (about 2 hours): the loss, a shallower network, a wider one, a small U-Net. Longer runs gained under 2%, so this is the better way to try ideas. Results land in a folder named quick_ plus the date.', 'heavy': True,
+         'confirm': 'This keeps the computer busy for about 2 hours. Start it?', 'cmd': lambda f: ['/usr/bin/caffeinate', '-i', '-s', PY, 'sweep.py', os.path.join(SWEEPS, 'quick_' + time.strftime('%Y%m%d')), '--quick'], 'cwd': 'tools/denoiser'},
         {'id': 'sweep_report', 'title': 'Show the training results', 'desc': 'Rebuilds and shows the table: each model against the baseline, better / worse / no clear difference, and how much slower it would run.', 'primary': True, 'cmd': lambda f: [PY, 'tools/denoiser/sweep_report.py', newest_sweep() or SWEEPS]},
         {'id': 'heldout_add', 'title': 'Add scenes to the test set', 'desc': 'Moves some of the newest scenes into the "never trained on" test set. After this, older models can no longer be compared with new ones.', 'fields': [{'name': 'n', 'label': 'How many scenes', 'default': '5'}],
          'confirm': 'This changes the test set, so models trained before cannot be compared fairly with ones trained after. Continue?', 'cmd': lambda f: [PY, 'tools/denoiser/make_heldout.py', DATASET, '--add', f['n']]},
@@ -236,7 +238,7 @@ def start_task(tid, f):
     with lock:
         busy = [j for j in JOBS.values() if j.code is None and j.task == tid]
     if busy: return {'ok': False, 'error': 'That job is already running.'}
-    if tid == 'sweep_start' and sweep_status().get('running'): return {'ok': False, 'error': 'The overnight training is already running.'}
+    if tid in ('sweep_start', 'sweep_quick') and sweep_status().get('running'): return {'ok': False, 'error': 'The overnight training is already running.'}
     if tid == 'publish':
         nf = os.path.join(SWEEPS, f'.notes-{int(time.time())}.md'); os.makedirs(SWEEPS, exist_ok=True); open(nf, 'w').write(f['notes'])
         cmd = ['/bin/zsh', 'tools/release.sh', f['ver'].strip(), '--publish', '--notes', nf]
