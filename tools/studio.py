@@ -153,7 +153,13 @@ class Helper:
     def __init__(self, script, port, title):
         self.script, self.port, self.title, self.p = script, port, title, None
 
-    def alive(self): return self.p is not None and self.p.poll() is None
+    def listening(self):
+        import socket
+        with socket.socket() as c:
+            c.settimeout(0.5)
+            return c.connect_ex(('127.0.0.1', self.port)) == 0
+
+    def alive(self): return (self.p is not None and self.p.poll() is None) or self.listening()   # also true for one started earlier by hand or by an older Studio
 
     def start(self):
         if not self.alive():
@@ -161,9 +167,10 @@ class Helper:
             time.sleep(1.2)
 
     def stop(self):
-        if self.alive():
+        if self.p is not None:
             try: os.killpg(os.getpgid(self.p.pid), signal.SIGTERM)
             except Exception: pass
+            self.p = None
 
 
 HELPERS = {'tag': Helper('tools/dataset/tag.py', 8765, 'Tag scenes'), 'ab': Helper('tools/dataset/ab.py', 8766, 'Blind A/B')}
@@ -218,7 +225,8 @@ def start_task(tid, f):
     t = TASKS[tid]
     if t.get('open'): subprocess.Popen(['open', t['open']]); return {'ok': True}
     if t.get('helper'):
-        h = HELPERS[t['helper']]; h.start(); return {'ok': h.alive(), 'url': f'http://127.0.0.1:{h.port}'}
+        h = HELPERS[t['helper']]; h.start()
+        return {'ok': True, 'url': f'http://127.0.0.1:{h.port}'} if h.alive() else {'ok': False, 'error': f'{h.title} could not start. Close any other copy of it and try again.'}
     for fld in t.get('fields', []):
         if fld['name'] in ('ver', 'old', 'new', 'model', 'n') and not str(f.get(fld['name'], '')).strip(): return {'ok': False, 'error': f"Please fill in: {fld['label']}"}
     if tid in ('build', 'publish') and not re.fullmatch(r'\d+\.\d+\.\d+', f['ver'].strip()): return {'ok': False, 'error': 'The version must look like 0.5.1'}
