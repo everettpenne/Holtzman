@@ -319,3 +319,13 @@ Afterwards: open the release page, download the APK from GitHub on the phone (or
 * **Training is slow or the Mac runs out of memory**: close other apps; the data loads from disk as it goes. The 12,000-step run needs a few GB of RAM.
 * **The training scripts say `heldout.txt` or scenes are missing**: run `tools/dataset/prepare.sh` first (step 4); a scene must be prepared (it has `aligned_0.raw`) to be used.
 * **Lost the signing key**: you cannot publish an update that installs over the old app. Keep a copy of `~/Code/holtzman-release/` somewhere safe, and the passphrase.
+
+## Holtzman's own photo and the blind A/B
+
+Since app 0.5.1, every paired handheld dataset capture also runs the real pipeline and saves the finished picture as `holtzman.jpg` in the scene folder
+(meta.json: `holtzmanFinal`, `holtzmanFinalMs`). `tools/dataset/pull.py` brings it along with the rest of the scene.
+
+`python3 tools/dataset/ab.py [dataset]` (http://127.0.0.1:8766) shows, for every scene that has both `holtzman.jpg` and a Pixel photo, the two pictures with the sides shuffled
+and unlabelled. Vote left / right / same (keys 1, 2, 3), optionally say what decided it; the answer is revealed afterwards. Click a picture for matching 100% crops.
+Votes go to `<dataset>/ab_votes.jsonl`; `/summary` gives Holtzman's win rate with 95% intervals overall, by ISO and by tag, and the reasons given for Pixel wins, which is the work list.
+Scenes captured before 0.5.1 have no `holtzman.jpg` and do not appear.
