@@ -329,3 +329,11 @@ Since app 0.5.1, every paired handheld dataset capture also runs the real pipeli
 and unlabelled. Vote left / right / same (keys 1, 2, 3), optionally say what decided it; the answer is revealed afterwards. Click a picture for matching 100% crops.
 Votes go to `<dataset>/ab_votes.jsonl`; `/summary` gives Holtzman's win rate with 95% intervals overall, by ISO and by tag, and the reasons given for Pixel wins, which is the work list.
 Scenes captured before 0.5.1 have no `holtzman.jpg` and do not appear.
+
+## Holtzman Studio (no terminal needed)
+
+Double-click `Holtzman Studio.command` in the repo's top folder (or `python3 tools/studio.py`). A page opens at http://127.0.0.1:8770 with status cards (phone connected, dataset
+counts, overnight training progress, unpublished version) and a button for every step above: copy from the phone, free up the phone, pair, prepare, tag, blind A/B, fit the look,
+start the training and see its results, compare and export a model, build or publish a release. Each job's output streams into the panel at the bottom. Deleting from the phone,
+changing the test set and publishing each ask first. It listens only on this computer and each action needs the page's secret token. The first time macOS may ask you to allow
+the .command file: right-click it, Open.
