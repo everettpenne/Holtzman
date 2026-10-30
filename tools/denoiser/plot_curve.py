@@ -61,6 +61,6 @@ for name, sel in groups:
 if len(fracs) >= 2:
     net = curve(ok, 1)
     last, prev = net[-1], net[-2]
-    gain_last = prev and (last[0] / prev[0] - 1) * 100
+    gain_last = (last[0] / prev[0] - 1) * 100
     gain_first_to_last = (last[0] / net[0][0] - 1) * 100
     print(f'\nfrom {xs[0]} to {xs[-1]} scenes: {gain_first_to_last:+.1f}%;  the last step ({xs[-2]} to {xs[-1]}): {gain_last:+.1f}%  (95% interval of the last point: {last[1]:.2f} to {last[2]:.2f})')
