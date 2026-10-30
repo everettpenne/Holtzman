@@ -109,6 +109,8 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("startedAt", started); put("finishedAt", System.currentTimeMillis())
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}"); put("build", Build.FINGERPRINT)
             put("app", "Holtzman dataset capture 1")
+            // what the preview.jpg beside the frames was rendered with, so the look can be fitted to it later (tools/look/fit_look.py)
+            put("appVersion", com.everettpenne.holtzman.BuildConfig.VERSION_NAME); put("lookSaturation", BurstRender.LOOK.saturation.toDouble())
             // the Pixel Camera app's photo of the same moment, taken first, when this was a paired capture: a path under Documents/Holtzman/Dataset
             pixelDouble?.let { put("pixelDouble", it); put("pairing", "pixel-first"); pixelZoom?.let { z -> put("pixelZoom", z) }; pixelZoomDetail?.let { d -> put("pixelZoomMeasured", d) }; PixelPairing.version(context)?.let { v -> put("pixelCameraVersion", v) } }
             put("zoom", controller.zoom.toDouble()); put("orientationDegrees", orientation)

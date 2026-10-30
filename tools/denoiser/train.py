@@ -1,5 +1,5 @@
 """Trains the raw denoiser: python3 train.py [steps]. Writes model.keras and a log. CPU is enough: the network is small."""
-import sys, time, json
+import sys, time, json, os
 import numpy as np
 import tensorflow as tf
 from data import load_scenes, sample, P
@@ -17,6 +17,7 @@ def build(width=32, depth=6):
 
 if __name__ == '__main__':
     scenes = load_scenes(); tr = scenes['train']; va = scenes['val']
+    print('handheld training scenes', sum(1 for s in tr if not s.static))
     print('train scenes', len(tr), [s.name for s in tr][:3], '... val', [s.name for s in va])
     rng = np.random.default_rng(0)
     # weight handheld bursts, the ladder and the clean reference so each kind is seen (the ladder and clean are single static scenes)
@@ -57,5 +58,5 @@ if __name__ == '__main__':
         x, y, w = batch(BATCH)
         l = float(step(x, y, w)); avg = l if avg is None else 0.98 * avg + 0.02 * l
         if i % 100 == 0: print(f'step {i}/{STEPS} loss {avg:.4f}  {time.time() - t0:.0f}s', flush=True)
-        if i % 1000 == 0: model.save('model.keras')
-    model.save('model.keras'); print('saved model.keras')
+        if i % 1000 == 0: model.save(os.environ.get('HOLTZMAN_MODEL_OUT', 'model.keras'))
+    out = os.environ.get('HOLTZMAN_MODEL_OUT', 'model.keras'); model.save(out); print('saved', out)

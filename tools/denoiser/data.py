@@ -4,7 +4,7 @@ A sample is a patch of a burst's frames, split into two independent sets: A (1 t
 The noise of A and B is independent, so a network trained to turn A into B learns the clean picture ("noise2noise") with no clean ground truth. Handheld
 bursts use the frames aligned to their reference (ix:alignDump); the ISO ladder (pairs at six ISOs) and the 40-frame clean reference are static.
 """
-import json, os, glob
+import json, os, glob, hashlib
 import numpy as np
 
 ROOT = os.environ.get('HOLTZMAN_DS', os.path.expanduser('~/Code/holtzman-dataset'))
@@ -33,12 +33,20 @@ class Scene:
 
 def load_scenes():
     scenes = {'train': [], 'val': []}
-    VAL = {'20261028_144533', '20261028_142038', '20261028_124424'}
+    _heldout = os.path.join(ROOT, 'heldout.txt')   # written by make_heldout.py: the fixed list of scenes that are never trained on
+    if os.environ.get('HOLTZMAN_VAL'): VAL = set(os.environ['HOLTZMAN_VAL'].split(','))
+    elif os.path.isfile(_heldout): VAL = {l.strip() for l in open(_heldout) if l.strip()}
+    else: VAL = {'20261028_144533', '20261028_142038', '20261028_124424'}   # the three the first models were scored on   # the held-out scenes; the env list is for the learning curve
     for d in sorted(glob.glob(ROOT + '/scene_*_handheld')):
         if not os.path.exists(d + '/aligned_0.raw'): continue
         p = json.load(open(d + '/params.json')); stamp = os.path.basename(d)[6:21]
         s = Scene(stamp, [f'{d}/aligned_{i}.raw' for i in range(p['frames'])], p['black'], p['white'], [p['iso']] * p['frames'], False)
         scenes['val' if stamp in VAL else 'train'].append(s)
+    # learning curve: keep only the first FRAC of the handheld training scenes, in a fixed shuffled order, so the 25% are inside the 50% and so on
+    frac = float(os.environ.get('HOLTZMAN_FRAC', '1'))
+    if frac < 1:
+        order = sorted(scenes['train'], key=lambda s: hashlib.md5(s.name.encode()).hexdigest())
+        scenes['train'] = order[:max(1, round(len(order) * frac))]
     for d in sorted(glob.glob(ROOT + '/scene_*_ladder')):
         m = json.load(open(d + '/meta.json')); fr = m['frames']; p = json.load(open(d + '/params.json'))
         s = Scene('ladder', [f'{d}/frame_{i}.raw' for i in range(len(fr))], p['black'], p['white'], [f['iso'] for f in fr], True, groups=[[i, i + 1] for i in range(0, len(fr), 2)])

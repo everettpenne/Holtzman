@@ -36,7 +36,8 @@ def run(scene, n, nA, label=''):
 
 for s in scenes['val']:
     for nA in (3, 4):
-        run(s, 24, nA, label=f'handheld {s.name} ISO {s.isos[0]} A={nA} frames')
+        run(s, int(os.environ.get('HOLTZMAN_EVAL_N', '24')), nA, label=f'handheld {s.name} ISO {s.isos[0]} A={nA} frames')
+if os.environ.get('HOLTZMAN_NO_LADDER'): sys.exit(0)
 lad = [s for s in scenes['train'] if s.name == 'ladder'][0]
 all_groups = lad.groups
 for g in all_groups:
