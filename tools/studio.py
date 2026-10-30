@@ -96,8 +96,9 @@ STATUS = {'t': 0, 'v': {}}
 def phone_status():
     out = run_quiet([ADB, 'devices', '-l'], timeout=5)
     devs = [l for l in out.splitlines()[1:] if l.strip() and 'offline' not in l and 'unauthorized' not in l]
+    devs = [l for l in devs if not l.startswith('emulator-')] or devs   # prefer the real phone over an emulator
     if not devs: return {'connected': False, 'note': 'unauthorized or offline: unlock the phone and accept the prompt' if 'unauthorized' in out or 'offline' in out else 'not connected'}
-    ls = run_quiet([ADB, 'shell', 'ls', '/sdcard/Documents/Holtzman/Dataset'], timeout=8)
+    ls = run_quiet([ADB, '-s', devs[0].split()[0], 'shell', 'ls', '/sdcard/Documents/Holtzman/Dataset'], timeout=8)
     n = len([l for l in ls.splitlines() if l.startswith(('scene_',)) or l.startswith('PXL')])
     return {'connected': True, 'name': devs[0].split()[0], 'model': (re.search(r'model:(\S+)', devs[0]) or [0, ''])[1], 'items': n}
 
@@ -172,7 +173,7 @@ HELPERS = {'tag': Helper('tools/dataset/tag.py', 8765, 'Tag scenes'), 'ab': Help
 # fields: name, label, default, hint.   confirm: asked in the browser before it runs.   danger: red button.
 GROUPS = [
     {'name': '1. Phone', 'blurb': 'Get the captures off the phone (USB cable, USB debugging on, phone unlocked).', 'tasks': [
-        {'id': 'phone_check', 'title': 'Check the phone', 'desc': 'Shows whether the phone is seen by the computer and how many scenes and Pixel photos are waiting on it.', 'cmd': lambda f: ['/bin/sh', '-c', f'{shlex.quote(ADB)} devices -l; echo; echo "Items waiting on the phone:"; {shlex.quote(ADB)} shell ls /sdcard/Documents/Holtzman/Dataset | wc -l']},
+        {'id': 'phone_check', 'title': 'Check the phone', 'desc': 'Shows whether the phone is seen by the computer and how many scenes and Pixel photos are waiting on it.', 'cmd': lambda f: ['/bin/sh', '-c', f'{shlex.quote(ADB)} devices -l; echo; S=$({shlex.quote(ADB)} devices | awk \'NR>1&&$2=="device"&&$1!~/^emulator/{{print $1}}\' | head -1); echo "Phone: $S"; echo "Items waiting on the phone:"; {shlex.quote(ADB)} -s "$S" shell ls /sdcard/Documents/Holtzman/Dataset | wc -l']},
         {'id': 'pull_dry', 'title': 'Preview the copy', 'desc': 'Says what would be copied and how big it is. Copies nothing.', 'cmd': lambda f: [PY, 'tools/dataset/pull.py', '--dry-run', '--dest', DATASET]},
         {'id': 'pull', 'title': 'Copy from the phone', 'desc': 'Copies every new scene and Pixel photo to this computer and checks each file against the phone\'s own checksum. Safe: it never deletes anything. If it is interrupted, run it again.', 'primary': True, 'cmd': lambda f: [PY, 'tools/dataset/pull.py', '--dest', DATASET]},
         {'id': 'pull_delete', 'title': 'Free up the phone', 'desc': 'Copies and re-checks everything, then DELETES from the phone only the scenes that are verified to be safely on this computer.', 'danger': True,

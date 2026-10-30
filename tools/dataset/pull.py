@@ -88,6 +88,8 @@ def main():
 
     adb = find_adb(a.adb)
     devs = [l.split()[0] for l in subprocess.run([adb, 'devices'], capture_output=True, text=True).stdout.splitlines()[1:] if l.strip().endswith('device')]
+    real = [d for d in devs if not d.startswith('emulator-')]
+    if not a.serial and real: devs = real   # an emulator running next to the phone is never the one to copy from
     if a.serial:
         if a.serial not in devs: sys.exit(f'Device {a.serial} is not connected (connected: {devs or "none"}). Unlock the phone and check the cable.')
     elif len(devs) != 1:
