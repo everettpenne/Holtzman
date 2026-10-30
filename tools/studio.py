@@ -276,9 +276,11 @@ function drawGroups(){$('#groups').innerHTML=G.map(g=>`<section><h2>${g.name}</h
  ${(t.fields||[]).map(f=>`<div><label>${f.label}</label>${f.area?`<textarea rows=3 id="f_${t.id}_${f.name}">${esc(f.default)}</textarea>`:`<input id="f_${t.id}_${f.name}" value="${esc(f.default)}">`}</div>`).join('')}
  <div class=row><button class="${t.danger?'danger':t.primary?'primary':''}" onclick="go('${t.id}')">${t.helper?'Open':t.open?'Open':t.danger?'Run…':'Run'}</button>${t.helper?`<button id="stop_${t.id}" onclick="stopH('${t.helper}')" style="display:none">Stop helper</button>`:''}</div></div>`).join('')}</div></section>`).join('')}
 async function go(id){const t=G.flatMap(g=>g.tasks).find(x=>x.id==id);const f={};(t.fields||[]).forEach(x=>f[x.name]=document.getElementById(`f_${id}_${x.name}`).value);
- if(t.confirm&&!confirm(t.confirm))return;const r=await post('/api/run/'+id,f);
- if(!r.ok){alert(r.error||'Could not start');return}
- if(r.url){window.open(r.url,'_blank');return}if(r.job){cur=r.job;await poll()}}
+ if(t.confirm&&!confirm(t.confirm))return;
+ const w=t.helper?window.open('about:blank','_blank'):null;   // opened now, while the click still counts, so the browser's pop-up blocker lets it through
+ const r=await post('/api/run/'+id,f);
+ if(!r.ok){if(w)w.close();alert(r.error||'Could not start');return}
+ if(r.url){if(w)w.location=r.url;else location.href=r.url;return}if(r.job){cur=r.job;await poll()}}
 async function stopH(h){await post('/api/stop_helper/'+h);refresh()}
 async function poll(){const r=await (await fetch('/api/jobs')).json();jobs=r.jobs;if(cur==null&&jobs.length)cur=jobs[jobs.length-1].id;
  $('#tabs').innerHTML=jobs.slice(-10).map(j=>`<span class="t ${j.id==cur?'on':''}" onclick="cur=${j.id};poll()">${j.running?'● ':j.code===0?'✓ ':'✗ '}${esc(j.title)}</span>`).join('')||'<span class=small>no jobs yet</span>';
