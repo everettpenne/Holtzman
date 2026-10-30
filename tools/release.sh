@@ -37,8 +37,11 @@ sed -i '' "s/versionCode = $CODE/versionCode = $NEWCODE/; s/versionName = \"[0-9
 grep -E 'versionCode|versionName' app/build.gradle.kts
 
 echo "== tests"
-./gradlew test -q 2>&1 | grep -v '^$' | tail -15 && true
-./gradlew test -q >/dev/null 2>&1 || fail "tests failed (see ./gradlew test); the version bump is still in app/build.gradle.kts: git checkout app/build.gradle.kts"
+if ! ./gradlew test -q > /tmp/holtzman-release-tests.log 2>&1; then
+  grep -v '^$' /tmp/holtzman-release-tests.log | tail -15
+  fail "tests failed (full output: /tmp/holtzman-release-tests.log). The version bump is still in app/build.gradle.kts: git checkout app/build.gradle.kts"
+fi
+echo "ok: all tests pass"
 
 echo "== build"
 export HOLTZMAN_RELEASE_STORE_FILE=$KEYDIR/holtzman-release.jks HOLTZMAN_RELEASE_KEY_ALIAS=holtzman
