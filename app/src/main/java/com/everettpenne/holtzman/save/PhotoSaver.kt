@@ -44,6 +44,19 @@ class PhotoSaver(private val resolver: ContentResolver) {
         return Saved(jpeg, dng)
     }
 
+    /**
+     * A JPEG of [bitmap] at [quality] as a file in Documents/Holtzman/[folder] (not in the gallery). The media library reads EXIF once, when a file is published, and
+     * [writeDocument] publishes straight away, so the rotation [degrees] is applied to the pixels instead of being written as a tag. [bitmap] is left as it was.
+     */
+    fun writeJpegDocument(folder: String, name: String, timeMillis: Long, bitmap: android.graphics.Bitmap, quality: Int, degrees: Int): Uri {
+        val upright = if (degrees % 360 == 0) bitmap else android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, android.graphics.Matrix().apply { postRotate(degrees.toFloat()) }, true)
+        try {
+            return writeDocument(folder, name, "image/jpeg", timeMillis) { out ->
+                if (!upright.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)) throw java.io.IOException("The JPEG encoder refused $name.")
+            }
+        } finally { if (upright !== bitmap) upright.recycle() }
+    }
+
     /** A JPEG of [bitmap] at [quality], with the EXIF orientation [degrees] written back afterwards, in Pictures/Holtzman like every other file. */
     fun writeJpeg(name: String, timeMillis: Long, bitmap: android.graphics.Bitmap, quality: Int, degrees: Int): Uri {
         // The rotation goes into the file while it is still pending. The media library reads a file's EXIF once, when it is published, and keeps what it

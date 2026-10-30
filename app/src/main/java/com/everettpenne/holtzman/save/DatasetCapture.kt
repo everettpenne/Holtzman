@@ -55,6 +55,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
         val files = JSONArray()
         var written = 0
         var first: BurstFrame? = null
+        var holtzmanFinal: String? = null; var holtzmanFinalMs = 0L
 
         fun save(frame: BurstFrame, name: String, group: String) {
             frame.pixels.rewind()
@@ -76,6 +77,13 @@ class DatasetCapture(private val controller: CameraController, private val saver
                 progress("Hold still…")
                 val frames = burst(6)
                 frames.forEachIndexed { i, f -> progress("Saving ${i + 1} of ${frames.size}"); save(f, "frame_%03d.dng".format(i), "burst") }
+                // Holtzman's own photo of this burst, made the normal way (merge, learned denoise, render, default look, no crop, no Ultra HDR) and kept beside the frames,
+                // so the Pixel photo of the same moment has a like-for-like partner (tools/dataset/ab.py compares them blind)
+                progress("Making Holtzman's own photo…")
+                val t = System.currentTimeMillis()
+                runCatching { BurstProcessor(saver, context).process(frames, chars, orientation, started, documentFolder = folder, documentName = "holtzman.jpg") }
+                    .onSuccess { holtzmanFinal = "holtzman.jpg"; holtzmanFinalMs = System.currentTimeMillis() - t }
+                    .onFailure { android.util.Log.w("HoltzmanDataset", "could not make Holtzman's own photo", it) }
             }
             DatasetKind.CLEAN -> {
                 // one exposure for every frame, from the automatic one at the start: the lowest ISO that keeps it under two seconds
@@ -110,6 +118,7 @@ class DatasetCapture(private val controller: CameraController, private val saver
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}"); put("build", Build.FINGERPRINT)
             put("app", "Holtzman dataset capture 1")
             // what the preview.jpg beside the frames was rendered with, so the look can be fitted to it later (tools/look/fit_look.py)
+            holtzmanFinal?.let { put("holtzmanFinal", it); put("holtzmanFinalMs", holtzmanFinalMs) }
             put("appVersion", com.everettpenne.holtzman.BuildConfig.VERSION_NAME); put("lookSaturation", BurstRender.LOOK.saturation.toDouble())
             // the Pixel Camera app's photo of the same moment, taken first, when this was a paired capture: a path under Documents/Holtzman/Dataset
             pixelDouble?.let { put("pixelDouble", it); put("pairing", "pixel-first"); pixelZoom?.let { z -> put("pixelZoom", z) }; pixelZoomDetail?.let { d -> put("pixelZoomMeasured", d) }; PixelPairing.version(context)?.let { v -> put("pixelCameraVersion", v) } }
