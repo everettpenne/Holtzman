@@ -652,7 +652,10 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     if (cb * cb + cr * cr > 1e-8) {
                         float deg = degrees(atan(cr, cb)); if (deg < 0.0) deg += 360.0;
                         float t = deg / 30.0; int i = int(t) % 12; float f = t - floor(t);
-                        float table = mix(hueK[i], hueK[(i + 1) % 12], f);
+                        float muted = mix(hueK[i], hueK[(i + 1) % 12], f);
+                        // vivid colours are not calmed but boosted a little (see IxLook.hueScale)
+                        float v = clamp((sqrt(cb * cb + cr * cr) - 0.14) / 0.16, 0.0, 1.0); v = v * v * (3.0 - 2.0 * v);
+                        float table = mix(muted, 1.15, v);
                         float lo = clamp((y - 0.04) / 0.11, 0.0, 1.0); float hi = clamp((y - 0.85) / 0.13, 0.0, 1.0);
                         float w = lo * lo * (3.0 - 2.0 * lo) * (1.0 - hi * hi * (3.0 - 2.0 * hi));
                         float sc = 1.0 + (table - 1.0) * hueChroma * w;

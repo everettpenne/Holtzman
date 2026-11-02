@@ -79,6 +79,7 @@ public class IxLook(
          * app's chroma is about 0.7x ours overall, 0.6x in orange, yellow and yellow-green (skin reads red and harsh in ours, paler and peach in the Pixel's),
          * 0.7-0.8x in violet and magenta, 1.0x in blue. The look's own saturation of 0.9 is part of that, so these are the multipliers still needed.
          */
+        public const val VIVID_BOOST: Float = 1.15f
         public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.88f, 0.8f, 0.78f, 0.66f, 0.62f, 0.62f, 0.68f, 0.76f, 0.9f, 0.97f, 1.0f)
         /** The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. */
         public fun hueScale(r: Float, g: Float, b: Float, strength: Float): Float {
@@ -87,7 +88,13 @@ public class IxLook(
             if (cb * cb + cr * cr < 1e-8f) return 1f
             var deg = Math.toDegrees(Math.atan2(cr.toDouble(), cb.toDouble())).toFloat(); if (deg < 0f) deg += 360f
             val t = deg / 30f; val i = t.toInt() % 12; val f = t - t.toInt()
-            val table = HUE_CHROMA[i] + (HUE_CHROMA[(i + 1) % 12] - HUE_CHROMA[i]) * f
+            val muted = HUE_CHROMA[i] + (HUE_CHROMA[(i + 1) % 12] - HUE_CHROMA[i]) * f
+            // The fit above comes from flat, muted areas (skin, wood, walls). Vivid objects go the other way: against the Pixel app on a bench scene (2026-11-02,
+            // phone) its orange panel had chroma 81 to our 49 and its yellows 67-74 to our 55-59, about 1.2x what the picture had before this stage. So the
+            // calming fades out as the colour gets vivid (display chroma 0.14 to 0.30) and gives way to a small boost.
+            val v = ((cb * cb + cr * cr).let { Math.sqrt(it.toDouble()).toFloat() } - 0.14f) / 0.16f
+            val vivid = v.coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
+            val table = muted + (VIVID_BOOST - muted) * vivid
             val lo = ((y - 0.04f) / 0.11f).coerceIn(0f, 1f); val hi = ((y - 0.85f) / 0.13f).coerceIn(0f, 1f)
             val w = lo * lo * (3f - 2f * lo) * (1f - hi * hi * (3f - 2f * hi))
             return 1f + (table - 1f) * strength * w
