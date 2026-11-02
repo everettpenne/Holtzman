@@ -172,5 +172,5 @@ class PhotoSaver(private val resolver: ContentResolver) {
         resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID),
             "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?", arrayOf(Environment.DIRECTORY_PICTURES + "/Holtzman%", "image/jpeg"),
             "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
-    }.getOrNull()
+    }.onFailure { android.util.Log.w("HoltzmanSave", "could not find the latest photo", it) }.getOrNull()
 }
