@@ -78,7 +78,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             allocate(buffers[3], pixels * 4)
             allocate(buffers[4], pixels * 4)
             allocate(buffers[6], pixels * 4)
-            if (s.look.denoise > 0f && noiseAwareFinish) allocate(buffers[5], pixels * 4)
+            val useFinish = (s.look.denoise > 0f || s.look.detail > 0f || s.look.clarity > 0f) && noiseAwareFinish
+            if (useFinish) allocate(buffers[5], pixels * 4)
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffers[0])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, buffers[1])
             GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 2, buffers[2])
@@ -207,7 +208,10 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             }
 
             var sigmas = FloatArray(3)
-            if (s.look.denoise > 0f && noiseAwareFinish) {
+            // The finish also carries the fine detail, medium-scale clarity and grain, so it runs whenever any of them is on, not only with denoising: with
+            // noise filtering turned off (denoise 0) it had been skipped entirely and pictures came out soft (fine-detail rms 2.7 on a concrete floor against the
+            // Pixel app's 4.4, 2026-11-02). With denoise 0 the edge-aware average keeps only the pixel itself, so the detail term is plain cored sharpening.
+            if (useFinish) {
                 // how noisy the toned picture is, by brightness: the GPU histograms the noise filter's response over a sample of the picture and the CPU
                 // reads back only the histogram (reading the picture itself back sample by sample took 0.7 s)
                 val histogram = IntArray(1); GLES31.glGenBuffers(1, histogram, 0)
