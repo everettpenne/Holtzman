@@ -80,7 +80,9 @@ public class IxLook(
          * 0.7-0.8x in violet and magenta, 1.0x in blue. The look's own saturation of 0.9 is part of that, so these are the multipliers still needed.
          */
         public const val VIVID_BOOST: Float = 1.4f
-        public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.88f, 0.8f, 0.78f, 0.66f, 0.62f, 0.62f, 0.68f, 0.76f, 0.9f, 0.97f, 1.0f)
+        // Softened from (1.0, 0.88, 0.8, 0.78, 0.66, 0.62, 0.62, 0.68, 0.76, 0.9, 0.97, 1.0): against the Pixel app on the workshop scene a muted wooden worktop
+        // measured chroma 19 in ours to 33 in the Pixel's, so the full flat-area fit made muted wood and paint dull; 0.85 keeps some calming for skin.
+        public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.92f, 0.88f, 0.88f, 0.85f, 0.85f, 0.85f, 0.87f, 0.9f, 0.95f, 1.0f, 1.0f)
         /** The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. */
         public fun hueScale(r: Float, g: Float, b: Float, strength: Float): Float {
             val y = 0.2126f * r + 0.7152f * g + 0.0722f * b

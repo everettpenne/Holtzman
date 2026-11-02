@@ -10,8 +10,8 @@ class IxHueChromaTest {
         assertTrue(IxLook.hueScale(0.1f, 0.3f, 0.9f, 1f) >= 0.99f)
     }
     @Test fun mutedSkinAndYellowAreCalmed() {
-        assertTrue(IxLook.hueScale(0.9f, 0.68f, 0.52f, 1f) < 0.75f)   // skin
-        assertTrue(IxLook.hueScale(0.75f, 0.72f, 0.5f, 1f) < 0.7f)    // muted yellow
+        assertTrue(IxLook.hueScale(0.9f, 0.68f, 0.52f, 1f) < 0.9f)    // skin
+        assertTrue(IxLook.hueScale(0.75f, 0.72f, 0.5f, 1f) < 0.9f)    // muted yellow
     }
     @Test fun vividColoursAreBoostedNotCalmed() {
         assertTrue(IxLook.hueScale(0.9f, 0.85f, 0.2f, 1f) > 1.05f)    // vivid yellow
