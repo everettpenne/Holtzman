@@ -163,4 +163,14 @@ class PhotoSaver(private val resolver: ContentResolver) {
         270 -> androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270
         else -> androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
     }
+
+    /**
+     * The newest JPEG this app saved in Pictures/Holtzman, for the thumbnail beside the shutter when the app opens (the iPhone shows the last photo, not an
+     * empty frame). Only the app's own files are visible to it without a storage permission, which is what is wanted here; null when there are none.
+     */
+    fun latestPhoto(): android.net.Uri? = runCatching {
+        resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?", arrayOf(Environment.DIRECTORY_PICTURES + "/Holtzman%", "image/jpeg"),
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
+    }.getOrNull()
 }

@@ -48,8 +48,12 @@ enum class StripItem(val label: String, val icon: ImageVector) {
     ISO("ISO", Icons.Rounded.Iso), FOCUS("Focus", Icons.Rounded.CenterFocusStrong), SETTINGS("Settings", Icons.Rounded.Settings)
 }
 
-private val ISO_STOPS = intArrayOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200)
+private val ISO_STOPS = intArrayOf(25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200)
 private val SHUTTER_DENOMINATORS = intArrayOf(4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500, 400, 320, 250, 200, 160, 125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10, 8, 6, 5, 4)
+
+/** The ISOs and shutter times of the usual third-of-a-stop lists that the sensor offers: the stops of the pro dials. */
+fun isoStops(range: IntRange): List<Int> = ISO_STOPS.filter { it in range }.ifEmpty { listOf(range.first) }
+fun shutterStops(range: LongRange): List<Long> = SHUTTER_DENOMINATORS.map { 1_000_000_000L / it }.filter { it in range }.ifEmpty { listOf(range.first) }
 
 /** Slider position (0..1) to an ISO from the usual third-of-a-stop list, 50 to 3200 (only those the sensor offers), and the position of an ISO on that scale. */
 fun isoFromT(t: Float, range: IntRange): Int {
@@ -94,6 +98,7 @@ fun ControlSlider(value: Float, range: ClosedFloatingPointRange<Float>, display:
 fun PhotoSettingsSheet(
     grid: Boolean, onGrid: (Boolean) -> Unit,
     level: Boolean, onLevel: (Boolean) -> Unit, histogram: Boolean, onHistogram: (Boolean) -> Unit,
+    proReadout: Boolean, onProReadout: (Boolean) -> Unit, subjectFocus: Boolean, onSubjectFocus: (Boolean) -> Unit,
     longCapture: Boolean, onLongCapture: (Boolean) -> Unit,
     instant: Boolean, onInstant: (Boolean) -> Unit,
     onDismiss: () -> Unit,
@@ -113,11 +118,19 @@ fun PhotoSettingsSheet(
                 GlassChip(longCapture, { onLongCapture(true) }) { Text("Longer capture", modifier = Modifier.padding(horizontal = 8.dp)) }
             }
             Text("Longer capture takes up to a few seconds in the dark, when the phone is steady, for less noise.", style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+            GlassSectionHeader("Focus")
+            Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(subjectFocus, { onSubjectFocus(!subjectFocus) }) { Text("Subject detection", modifier = Modifier.padding(horizontal = 8.dp)) }
+            }
+            Text("Finds the person, pet or object the picture is about and keeps focus on it; faces come first. Touch and hold the picture to lock focus and exposure.", style = IosType.footnote, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
             GlassSectionHeader("Guides")
             Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GlassChip(grid, { onGrid(!grid) }) { Text("Grid", modifier = Modifier.padding(horizontal = 8.dp)) }
                 GlassChip(level, { onLevel(!level) }) { Text("Level", modifier = Modifier.padding(horizontal = 8.dp)) }
                 GlassChip(histogram, { onHistogram(!histogram) }) { Text("Histogram", modifier = Modifier.padding(horizontal = 8.dp)) }
+            }
+            Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(proReadout, { onProReadout(!proReadout) }) { Text("Pro readout", modifier = Modifier.padding(horizontal = 8.dp)) }
             }
         }
     }

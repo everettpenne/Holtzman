@@ -110,11 +110,11 @@ class CameraController(private val context: Context) {
                 result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { ringResults[it] = result }
                 if (ringResults.size > RING_FRAMES * 3) { val oldest = ring.firstOrNull()?.timestamp ?: Long.MAX_VALUE; ringResults.keys.filter { it < oldest }.forEach { ringResults.remove(it) } }
                 ringFrameCount++
-                updateAutoRegion()
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - ringFpsSince >= 4000) { Log.i(TAG, "instant capture: %.1f frames/s into the ring, ${ring.size} kept".format(java.util.Locale.ROOT, ringFrameCount * 1000f / (now - ringFpsSince))); ringFrameCount = 0; ringFpsSince = now }
             }
             streamFrames++
+            updateAutoRegion()
             // the automatic white balance's own answer, kept so the warmth control can start from it
             result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestGains = it }
             result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestTransform = it }
@@ -156,18 +156,40 @@ class CameraController(private val context: Context) {
     @Volatile private var autoRegion: IntArray? = null
     private var autoRegionSince = 0L
 
+    /**
+     * The subject the viewfinder's subject finder sees (left, top, right, bottom as fractions of the upright preview: the part focus should look at), or
+     * null. Set by the screen a few times a second; a face found by the camera itself still comes first.
+     */
+    @Volatile var subjectBox: FloatArray? = null
+
     private fun desiredAutoRegion(): IntArray? {
         val chars = characteristics ?: return null
         val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val orientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         val face = largestFace(latestFaces)
-        val r = if (face != null) faceRegion(face, array.width(), array.height(), 0.1f)
-                else meteringBox(sensorPoint(0.5f, 0.5f, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, zoom), array.width(), array.height())
+        val subject = subjectBox
+        val r = when {
+            face != null -> faceRegion(face, array.width(), array.height(), 0.1f)
+            subject != null -> sensorBox(subject, orientation, zoom, array.width(), array.height())
+            else -> meteringBox(sensorPoint(0.5f, 0.5f, orientation, zoom), array.width(), array.height())
+        }
         return intArrayOf(r[0] + array.left, r[1] + array.top, r[2] + array.left, r[3] + array.top)
     }
 
-    /** Called with every preview result while instant capture is on: moves the autofocus area when the face (or the lack of one) moved it by a fair amount, at most twice a second. */
+    /** The largest face the camera sees, as a box of the upright preview (fractions), for drawing; null when there is none. */
+    fun faceInPreview(): FloatArray? {
+        val chars = characteristics ?: return null
+        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val face = largestFace(latestFaces) ?: return null
+        val o = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val a = previewPoint((face.left - array.left).toFloat() / array.width(), (face.top - array.top).toFloat() / array.height(), o, zoom) ?: return null
+        val b = previewPoint((face.right - array.left).toFloat() / array.width(), (face.bottom - array.top).toFloat() / array.height(), o, zoom) ?: return null
+        return floatArrayOf(minOf(a.first, b.first), minOf(a.second, b.second), maxOf(a.first, b.first), maxOf(a.second, b.second))
+    }
+
+    /** Called with every preview result: moves the continuous autofocus area when the face, the subject (or the lack of them) moved it by a fair amount, at most twice a second. */
     private fun updateAutoRegion() {
-        if (manualFocus != null || focusRegion != null) { autoRegion = null; return }
+        if (manualFocus != null || focusRegion != null || extension != null) { autoRegion = null; return }
         val want = desiredAutoRegion() ?: return
         val have = autoRegion
         val now = android.os.SystemClock.elapsedRealtime()
@@ -430,6 +452,7 @@ class CameraController(private val context: Context) {
                 b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evSteps)
             }
+            b.set(CaptureRequest.CONTROL_AE_LOCK, aeAfLocked)
             val g = heldGains; val tr = heldTransform; val k = warmthFactor
             if (k != 1f && g != null && tr != null) {
                 b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
@@ -448,7 +471,7 @@ class CameraController(private val context: Context) {
                 b.set(CaptureRequest.CONTROL_AF_REGIONS, area); b.set(CaptureRequest.CONTROL_AE_REGIONS, area)
             } else {
                 val a = autoRegion
-                if (zslEnabled && manualFocus == null && a != null) b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(android.hardware.camera2.params.MeteringRectangle(a[0], a[1], a[2] - a[0], a[3] - a[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX)))
+                if (manualFocus == null && a != null) b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(android.hardware.camera2.params.MeteringRectangle(a[0], a[1], a[2] - a[0], a[3] - a[1], android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX)))
                 else b.set(CaptureRequest.CONTROL_AF_REGIONS, null)
                 b.set(CaptureRequest.CONTROL_AE_REGIONS, null)
             }
@@ -480,6 +503,7 @@ class CameraController(private val context: Context) {
      */
     fun focusAt(u: Float, v: Float) {
         if (manualFocus != null) return   // focus is the user's
+        aeAfLocked = false
         val chars = characteristics ?: return
         val s = session ?: return
         val device = device ?: return
@@ -490,8 +514,26 @@ class CameraController(private val context: Context) {
         lockOn(meteringBox(mapped, array.width(), array.height()).let { intArrayOf(it[0] + array.left, it[1] + array.top, it[2] + array.left, it[3] + array.top) })
     }
 
-    /** Focus and meter on [region] (left, top, right, bottom in the sensor's coordinates) and trigger a scan; continuous focus resumes after 3.5 s. */
-    private fun lockOn(region: IntArray) {
+    /**
+     * AE/AF lock, the iPhone's long press: focus and meter at a point of the upright preview ([u], [v]), then hold both (exposure locked, focus locked
+     * after its scan) until [unlock] or another tap; continuous focus does not come back on its own.
+     */
+    @Volatile var aeAfLocked = false; private set
+    fun lockAt(u: Float, v: Float) {
+        if (manualFocus != null || extension != null) return
+        val chars = characteristics ?: return
+        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val mapped = sensorPoint(u, v, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, zoom)
+        aeAfLocked = false
+        lockOn(meteringBox(mapped, array.width(), array.height()).let { intArrayOf(it[0] + array.left, it[1] + array.top, it[2] + array.left, it[3] + array.top) }, hold = true)
+        // exposure is locked once the scan has had a moment to meter the new area
+        handler.postDelayed({ if (focusRegion != null) { aeAfLocked = true; resend() } }, 600)
+    }
+    /** Ends an AE/AF lock (or a tap's focus): back to continuous focus and automatic exposure. */
+    fun unlock() { handler.removeCallbacks(afReset); aeAfLocked = false; clearFocus() }
+
+    /** Focus and meter on [region] (left, top, right, bottom in the sensor's coordinates) and trigger a scan; continuous focus resumes after 3.5 s unless [hold]. */
+    private fun lockOn(region: IntArray, hold: Boolean = false) {
         val s = session ?: return
         val device = device ?: return
         focusRegion = region
@@ -509,10 +551,31 @@ class CameraController(private val context: Context) {
                 }, handler)
             } catch (e: Exception) { Log.w(TAG, "focus trigger failed", e) }
         }
-        handler.removeCallbacks(afReset); handler.postDelayed(afReset, 3500)
+        handler.removeCallbacks(afReset)
+        if (!hold) handler.postDelayed(afReset, 3500)
     }
 
-    private fun clearFocus() { focusRegion = null; resend() }
+    /**
+     * Back to continuous focus over the automatic area. Root cause of focus that stuck after a tap or a shot: in CONTINUOUS_PICTURE mode an
+     * AF_TRIGGER_START locks the lens until an AF_TRIGGER_CANCEL, and none was ever sent, so after the first tap (or, without instant capture, the first
+     * shot) the lens stayed at that distance while the screen showed continuous focus. Clearing the area now also cancels the trigger.
+     */
+    private fun clearFocus() {
+        focusRegion = null; aeAfLocked = false
+        resend()
+        val s = session ?: return; val device = device ?: return
+        if (extension != null) return
+        handler.post {
+            try {
+                s.capture(device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                    addTarget(previewSurface!!)
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                    set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+                    set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom)
+                }.build(), null, handler)
+            } catch (e: Exception) { Log.w(TAG, "focus cancel failed", e) }
+        }
+    }
 
     /**
      * Runs one autofocus scan and waits for it to lock (at most 1.5 s), then calls [then], so a shot is focused on what the camera sees as the shutter
@@ -533,7 +596,15 @@ class CameraController(private val context: Context) {
             val r = faceRegion(face, array.width(), array.height(), 0.1f)
             Log.i(TAG, "shutter focus on a face (score ${face.score}, ${face.right - face.left} px wide)")
             lockOn(intArrayOf(r[0] + array.left, r[1] + array.top, r[2] + array.left, r[3] + array.top))
-        } else focusAt(0.5f, 0.5f)
+        } else {
+            // then the subject the viewfinder's finder sees (a person to one side, a pet, a cup on a desk), and only then the middle of the frame
+            val subject = subjectBox
+            if (subject != null && array != null) {
+                val r = sensorBox(subject, characteristics?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, zoom, array.width(), array.height())
+                Log.i(TAG, "shutter focus on the subject")
+                lockOn(intArrayOf(r[0] + array.left, r[1] + array.top, r[2] + array.left, r[3] + array.top))
+            } else focusAt(0.5f, 0.5f)
+        }
         handler.post {
             fun poll() {
                 val waited = android.os.SystemClock.uptimeMillis() - started

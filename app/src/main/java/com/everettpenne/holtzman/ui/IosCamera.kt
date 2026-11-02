@@ -44,9 +44,12 @@ fun CardFrame(modifier: Modifier = Modifier, content: @Composable ColumnScope.()
 @Composable
 fun CardHeader(onBack: () -> Unit, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null, center: @Composable () -> Unit) {
     Row(modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack).semantics { contentDescription = "Back" }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.KeyboardArrowLeft, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+        // the two sides are the same width, so the title stays centred whatever the right side holds (an AUTO button needs more than a round 44 dp)
+        Box(Modifier.width(64.dp).height(44.dp), contentAlignment = Alignment.CenterStart) {
+            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack).semantics { contentDescription = "Back" }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.KeyboardArrowLeft, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+        }
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { center() }
-        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { trailing?.invoke() }
+        Box(Modifier.width(64.dp).height(44.dp), contentAlignment = Alignment.CenterEnd) { trailing?.invoke() }
     }
 }
 

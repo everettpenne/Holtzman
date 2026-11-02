@@ -105,6 +105,33 @@ fun meteringBox(point: Pair<Float, Float>, arrayWidth: Int, arrayHeight: Int, fr
     return intArrayOf(cx - half, cy - half, cx + half, cy + half)
 }
 
+/** The inverse of [sensorPoint]: a point of the sensor's active array (fractions) to the upright preview (fractions), or null when it lies outside the zoomed view. */
+fun previewPoint(sx: Float, sy: Float, sensorOrientation: Int, zoom: Float): Pair<Float, Float>? {
+    val z = zoom.coerceAtLeast(1f)
+    val ax = 0.5f + (sx - 0.5f) * z; val ay = 0.5f + (sy - 0.5f) * z
+    val (u, v) = when (((sensorOrientation % 360) + 360) % 360) {
+        90 -> 1f - ay to ax
+        180 -> 1f - ax to 1f - ay
+        270 -> ay to 1f - ax
+        else -> ax to ay
+    }
+    return if (u < -0.05f || u > 1.05f || v < -0.05f || v > 1.05f) null else u.coerceIn(0f, 1f) to v.coerceIn(0f, 1f)
+}
+
+/**
+ * A box of the upright preview ([box]: left, top, right, bottom as fractions) as a region of the active array (left, top, right, bottom in array pixels,
+ * from the array's own origin), at least [minFraction] of the array's short side each way so autofocus has some texture to work with.
+ */
+fun sensorBox(box: FloatArray, sensorOrientation: Int, zoom: Float, arrayWidth: Int, arrayHeight: Int, minFraction: Float = 0.08f): IntArray {
+    val a = sensorPoint(box[0], box[1], sensorOrientation, zoom); val b = sensorPoint(box[2], box[3], sensorOrientation, zoom)
+    var x0 = minOf(a.first, b.first) * arrayWidth; var x1 = maxOf(a.first, b.first) * arrayWidth
+    var y0 = minOf(a.second, b.second) * arrayHeight; var y1 = maxOf(a.second, b.second) * arrayHeight
+    val min = minOf(arrayWidth, arrayHeight) * minFraction
+    if (x1 - x0 < min) { val c = (x0 + x1) / 2f; x0 = c - min / 2f; x1 = c + min / 2f }
+    if (y1 - y0 < min) { val c = (y0 + y1) / 2f; y0 = c - min / 2f; y1 = c + min / 2f }
+    return intArrayOf(Math.round(x0).coerceIn(0, arrayWidth - 1), Math.round(y0).coerceIn(0, arrayHeight - 1), Math.round(x1).coerceIn(1, arrayWidth), Math.round(y1).coerceIn(1, arrayHeight))
+}
+
 /** A zoom ratio kept inside what the camera offers. */
 fun clampZoom(ratio: Float, min: Float, max: Float): Float = if (ratio.isNaN()) min.coerceAtLeast(1f).coerceAtMost(max) else ratio.coerceIn(min, max)
 

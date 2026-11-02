@@ -146,6 +146,12 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var longCapture by remember { mutableStateOf(prefs.getBoolean("longCapture", false)) }
     LaunchedEffect(longCapture) { prefs.edit().putBoolean("longCapture", longCapture).apply() }
     var levelOn by remember { mutableStateOf(prefs.getBoolean("level", false)) }
+    // the pro readout (ISO, shutter, compensation, focus, live) over the viewfinder, and subject-aware autofocus; both on unless turned off
+    var proReadout by remember { mutableStateOf(prefs.getBoolean("proReadout", true)) }
+    var subjectFocus by remember { mutableStateOf(prefs.getBoolean("subjectFocus", true)) }
+    LaunchedEffect(proReadout, subjectFocus) { prefs.edit().putBoolean("proReadout", proReadout).putBoolean("subjectFocus", subjectFocus).apply() }
+    // AE/AF lock (a long press on the picture): focus and exposure held until the next tap
+    var aeAfLock by remember { mutableStateOf(false) }
     var histogramOn by remember { mutableStateOf(prefs.getBoolean("histogram", false)) }
     LaunchedEffect(levelOn, histogramOn) { prefs.edit().putBoolean("level", levelOn).putBoolean("histogram", histogramOn).apply() }
     LaunchedEffect(cropRatio) { prefs.edit().putInt("ratio", cropRatio.ordinal).apply() }
@@ -236,14 +242,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     }
     LaunchedEffect(recording) { elapsed = 0; while (recording) { delay(1000); elapsed++ } }
     LaunchedEffect(videoMode) { if (videoMode && !audioGranted) askAudio.launch(android.Manifest.permission.RECORD_AUDIO) }
-    LaunchedEffect(focusPoint, focusTick) { if (focusPoint != null) { delay(2500); focusPoint = null } }
-    // the thumbnail beside the shutter: the last photo (or video) taken
+    LaunchedEffect(focusPoint, focusTick, aeAfLock) { if (focusPoint != null && !aeAfLock) { delay(2500); focusPoint = null } }
+    // a lens or mode change ends a lock
+    LaunchedEffect(lens, videoMode, nightExtension) { if (aeAfLock) { aeAfLock = false; focusPoint = null; controller.unlock() } }
+    // the thumbnail beside the shutter: the last photo (or video) taken; on opening, the newest photo the app saved before
+    LaunchedEffect(Unit) { if (last == null) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
     LaunchedEffect(last, lastVideo, videoMode) {
         val uri = if (videoMode) lastVideo else last?.jpeg
         lastThumb = if (uri == null) null else withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(160, 160), null) }.getOrNull() }
     }
     // load the TPU denoiser now, off the main thread, so the first photo does not wait for it
-    LaunchedEffect(Unit) { withContext(Dispatchers.Default) { com.everettpenne.holtzman.ml.TpuDenoiser.shared(context) } }
+    // (only when it is switched on: noise filtering is off by default since 2026-11-02, and loading it took the TPU and memory at every start for nothing)
+    LaunchedEffect(Unit) { if (com.everettpenne.holtzman.save.DebugFlags.on("tpu")) withContext(Dispatchers.Default) { com.everettpenne.holtzman.ml.TpuDenoiser.shared(context) } }
     LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
 
     fun shootBurst() {
@@ -412,7 +422,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 onError = { scope.launch(Dispatchers.Main) { status = it } })
         }
     }
+    val hostView = androidx.compose.ui.platform.LocalView.current
     fun trigger() {
+        hostView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
         if (videoMode) { toggleRecording(); return }
         if (countdown > 0) { countdown = 0; return }          // pressing during the countdown cancels it
         if (timer == TimerMode.OFF) { shoot(); return }
@@ -424,6 +436,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     }
     LaunchedEffect(Unit) { ShutterKeys.flow.collect { if (!shutterBusy) trigger() } }
 
+    // what automatic exposure and focus are doing now, for the pro readout (a few times a second is enough to read)
+    var liveExposure by remember { mutableStateOf<Pair<Int, Long>?>(null) }
+    var liveFocus by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(proReadout, resumed) { while (proReadout && resumed) { liveExposure = controller.currentExposure; liveFocus = controller.autoSample?.focusDiopters; delay(250) } }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
         val ratio = previewShape?.let { it.height.toFloat() / it.width } ?: (3f / 4f)
@@ -466,6 +482,19 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     if (styleChanged) Box(Modifier.size(40.dp).clip(CircleShape).clickable { activeItem = StripItem.STYLES; showControls = false }.semantics { contentDescription = "Photographic style" }, contentAlignment = Alignment.Center) { DotGridGlyph(CameraYellow) }
                 }
             }
+            // ---- the pro readout: ISO, shutter, compensation and focus as they are now; each opens its dial
+            // (its row is kept from the start so the picture does not jump when it appears; the values wait for the camera's first frames, so it never reads "ISO –")
+            if (proReadout && !videoMode && nightExtension == null) Box(Modifier.fillMaxWidth().height(34.dp), contentAlignment = Alignment.Center) { if (liveExposure != null || manualExposureOn) {
+                val iso = isoT?.let { isoFromT(it, controller.isoRange) } ?: liveExposure?.first
+                val ns = shutterT?.let { shutterNsFromT(it, controller.exposureRangeNs) } ?: liveExposure?.second
+                val open: (StripItem) -> () -> Unit = { item -> { showControls = false; activeItem = item } }
+                ProReadout(listOfNotNull(
+                    Triple("ISO ${iso ?: "–"}", isoT != null, open(StripItem.ISO)),
+                    Triple(ns?.let { shutterLabel(it) } ?: "–", shutterT != null, open(StripItem.SHUTTER)),
+                    if (!manualExposureOn) Triple("EV ${evLabel(evEff)}", evEff != 0f, open(StripItem.EXPOSURE)) else null,
+                    Triple(when { focusT != null -> "MF " + focusLabel(focusT!! * controller.minFocusDiopters); aeAfLock -> "AE/AF L"; else -> "AF " + (liveFocus?.let { focusLabel(it) } ?: "") }.trim(), focusT != null || aeAfLock, open(StripItem.FOCUS)),
+                ))
+            } }
             // ---- the viewfinder
             Box(Modifier.fillMaxWidth().aspectRatio(ratio)) {   // square-cornered, as the iPhone's
                 // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
@@ -485,7 +514,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 // Touch on the picture: tap to focus (and meter) there, then drag up or down for exposure (the sun beside the focus square), pinch to zoom,
                 // swipe a long way sideways to change mode.
                 Box(Modifier.matchParentSize()
-                    .pointerInput(Unit) { detectTapGestures { p -> focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) } }
+                    .pointerInput(Unit) { detectTapGestures(
+                        onTap = { p -> if (aeAfLock) { aeAfLock = false; controller.unlock() }; focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) },
+                        onLongPress = { p -> if (focusT == null && nightExtension == null && !videoMode) { focusPoint = p; focusTick++; aeAfLock = true; controller.lockAt(p.x / size.width, p.y / size.height); hostView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } }) }
                     .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }
                     .pointerInput(videoMode, recording) { var total = 0f; detectHorizontalDragGestures(onDragStart = { total = 0f }, onDragEnd = { if (!recording) { if (total > 160f && videoMode) { videoMode = false } else if (total < -160f && !videoMode) { videoMode = true; night = false } } }) { _, dx -> total += dx } }
                     .pointerInput(Unit) { detectVerticalDragGestures { change, dy -> if (focusPoint != null && !manualExposureOn) { evValue = (evValue - dy / 110.dp.toPx()).coerceIn(-2f, 2f); focusTick++; change.consume() } } }) {
@@ -499,6 +530,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                         }
                     }
                 }
+                // what focus is following (a face, or the subject the finder sees), unless the user has put focus somewhere
+                val tracked by rememberSubjectTracking(previewView, controller, subjectFocus && !videoMode && nightExtension == null && focusT == null && resumed) { deviceDegrees }
+                SubjectOverlay(tracked, hidden = focusPoint != null || aeAfLock, modifier = Modifier.matchParentSize())
+                if (aeAfLock) Text("AE/AF LOCK", style = IosType.caption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp), color = Color.Black,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp).clip(RoundedCornerShape(4.dp)).background(CameraYellow).padding(horizontal = 8.dp, vertical = 3.dp))
                 // the thirds grid, over the picture
                 if (grid) Box(Modifier.matchParentSize().drawBehind {
                     val c = Color.White.copy(alpha = .35f)
@@ -588,10 +624,29 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     StripItem.STYLES -> StylesCard(preset, { preset = it }, styleIntensity, { styleIntensity = it },
                         (warmthValue / 20f).coerceIn(-1f, 1f), (shadowsValue / 20f).coerceIn(-1f, 1f), { c, t -> warmthValue = c * 20f; shadowsValue = t * 20f },
                         textureStyle, { textureStyle = it }, textureAmount, { textureAmount = it }, styleThumb, closeCard, startOnTexture = startStylesOnTexture)
-                    StripItem.EXPOSURE -> CardFrame { CardHeader(closeCard) { CardTitle("Exposure  " + "%+.1f".format(java.util.Locale.ROOT, evEff)) }; TickSlider((evValue + 2f) / 4f, { evValue = it * 4f - 2f }, Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) }
-                    StripItem.SHUTTER -> CardFrame { CardHeader(closeCard) { CardTitle("Shutter") }; ControlSlider(shutterT ?: 0.5f, 0f..1f, shutterT?.let { shutterLabel(shutterNsFromT(it, controller.exposureRangeNs)) } ?: controller.currentExposure?.let { shutterLabel(it.second) } ?: "Auto", Icons.Rounded.Speed, Icons.Rounded.HourglassBottom, "Shutter", { shutterT = it }, isAuto = shutterT == null, onAuto = { shutterT = null }) }
-                    StripItem.ISO -> CardFrame { CardHeader(closeCard) { CardTitle("ISO") }; ControlSlider(isoT ?: 0.5f, 0f..1f, isoT?.let { "ISO " + isoFromT(it, controller.isoRange) } ?: controller.currentExposure?.let { "ISO " + it.first } ?: "Auto", Icons.Rounded.Remove, Icons.Rounded.Add, "ISO", { isoT = it }, isAuto = isoT == null, onAuto = { isoT = null }) }
-                    StripItem.FOCUS -> CardFrame { CardHeader(closeCard) { CardTitle("Focus") }; ControlSlider(focusT ?: 0f, 0f..1f, focusT?.let { focusLabel(it * controller.minFocusDiopters) } ?: "Auto", Icons.Rounded.Landscape, Icons.Rounded.FilterCenterFocus, "Focus", { focusT = it }, isAuto = focusT == null, onAuto = { focusT = null }) }
+                    // the pro dials: a ruler under a fixed needle, the iPhone's; ISO, shutter and focus start from what the camera is doing now
+                    StripItem.EXPOSURE -> {
+                        val i = EV_STOPS.indices.minByOrNull { kotlin.math.abs(EV_STOPS[it] - evEff) } ?: 6
+                        DialCard("Exposure", evLabel(EV_STOPS[i]), EV_STOPS.map { evLabel(it) }, i, { evValue = EV_STOPS[it] }, closeCard)
+                    }
+                    StripItem.SHUTTER -> {
+                        val stops = shutterStops(controller.exposureRangeNs)
+                        val now = shutterT?.let { shutterNsFromT(it, controller.exposureRangeNs) } ?: liveExposure?.second ?: stops[stops.size / 2]
+                        val i = stops.indices.minByOrNull { kotlin.math.abs(kotlin.math.ln(stops[it].toDouble() / now)) } ?: 0
+                        DialCard("Shutter", shutterLabel(now), stops.map { shutterLabel(it) }, i, { shutterT = it / (stops.size - 1f).coerceAtLeast(1f) }, closeCard, auto = shutterT == null, onAuto = { shutterT = null })
+                    }
+                    StripItem.ISO -> {
+                        val stops = isoStops(controller.isoRange)
+                        val now = isoT?.let { isoFromT(it, controller.isoRange) } ?: liveExposure?.first ?: stops[stops.size / 2]
+                        val i = stops.indices.minByOrNull { kotlin.math.abs(kotlin.math.ln(stops[it].toDouble() / now)) } ?: 0
+                        DialCard("ISO", "$now", stops.map { "$it" }, i, { isoT = it / (stops.size - 1f).coerceAtLeast(1f) }, closeCard, auto = isoT == null, onAuto = { isoT = null })
+                    }
+                    StripItem.FOCUS -> {
+                        val stops = focusStops(controller.minFocusDiopters)
+                        val now = focusT?.let { it * controller.minFocusDiopters } ?: liveFocus ?: 0f
+                        val i = stops.indices.minByOrNull { kotlin.math.abs(stops[it] - now) } ?: 0
+                        DialCard("Focus", if (focusT == null) "AF " + focusLabel(now) else focusLabel(now), stops.map { focusLabel(it) }, i, { focusT = it / (stops.size - 1f).coerceAtLeast(1f); if (aeAfLock) { aeAfLock = false; controller.unlock() } }, closeCard, auto = focusT == null, onAuto = { focusT = null }, labelEvery = 5)
+                    }
                     else -> {}
                 }
             }
@@ -623,6 +678,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(warmthEff) { controller.setWarmth(1f + 0.006f * warmthEff) }
     if (showPhotoSettings) PhotoSettingsSheet(
         grid = grid, onGrid = { grid = it }, level = levelOn, onLevel = { levelOn = it }, histogram = histogramOn, onHistogram = { histogramOn = it },
+        proReadout = proReadout, onProReadout = { proReadout = it }, subjectFocus = subjectFocus, onSubjectFocus = { subjectFocus = it },
         longCapture = longCapture, onLongCapture = { longCapture = it }, instant = instant && !longCapture, onInstant = { instant = it; if (it) longCapture = false },
         onDismiss = { showPhotoSettings = false })
     if (showChooseStyle) {

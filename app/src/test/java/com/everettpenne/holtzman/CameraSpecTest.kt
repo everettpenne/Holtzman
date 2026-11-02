@@ -139,4 +139,23 @@ class CameraSpecTest {
     @Test fun anExposureWithinTheLimitIsLeftAlone() {
         assertEquals(20_000_000L to 400, shakeAdjusted(20_000_000L, 400, 30_000_000L, 3200))
     }
+
+    @Test fun previewPointUndoesSensorPointAtEveryOrientationAndZoom() {
+        for (o in listOf(0, 90, 180, 270)) for (z in listOf(1f, 2f)) for ((u, v) in listOf(0.3f to 0.2f, 0.7f to 0.6f, 0.5f to 0.5f)) {
+            val (sx, sy) = sensorPoint(u, v, o, z)
+            val back = previewPoint(sx, sy, o, z)!!
+            assertEquals("o=$o z=$z", u, back.first, 1e-5f); assertEquals("o=$o z=$z", v, back.second, 1e-5f)
+        }
+    }
+
+    @Test fun aPointOutsideTheZoomedViewIsNotInThePreview() = assertNull(previewPoint(0.05f, 0.5f, 90, 2f))
+
+    @Test fun aSubjectBoxBecomesAnOrderedSensorRegionOfAtLeastTheMinimumSize() {
+        val r = sensorBox(floatArrayOf(0.4f, 0.1f, 0.6f, 0.3f), 90, 1f, 4000, 3000)
+        assertTrue(r[0] < r[2] && r[1] < r[3])
+        // upright (u, v) -> sensor (v, 1 - u) at 90 degrees: the box's v 0.1..0.3 is sensor x 400..1200, its u 0.4..0.6 sensor y 1200..1800
+        assertEquals(400, r[0]); assertEquals(1200, r[1]); assertEquals(1200, r[2]); assertEquals(1800, r[3])
+        val tiny = sensorBox(floatArrayOf(0.5f, 0.5f, 0.51f, 0.51f), 90, 1f, 4000, 3000)
+        assertTrue(tiny[2] - tiny[0] >= 239 && tiny[3] - tiny[1] >= 239)
+    }
 }
