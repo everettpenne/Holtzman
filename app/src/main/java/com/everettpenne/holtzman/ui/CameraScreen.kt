@@ -269,13 +269,14 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         val prep = com.everettpenne.holtzman.save.BurstPrep()
         val tuning = BurstRender.LookTuning(texture, grain, preset, evEff, shadowsEff, warmthEff, intensity = styleIntensity, textureStyle = textureStyle, textureAmount = textureAmount, manualExposure = manualExposureOn)
         val crop = cropRatio.takeUnless { it.isFull }?.longOverShort
+        val shotZoom = controller.zoom   // the zoom the viewfinder showed at the tap: the RAW frames are not cropped by it, so the render is
         val deliver: (List<com.everettpenne.holtzman.camera.BurstFrame>) -> Unit = { frames ->
             stamp("all frames in memory")
             scope.launch(Dispatchers.Main) { pending++; busy = false; status = "Saving…"; stamp("shutter ready again") }
             scope.launch(burstQueue) {
                 val compare = context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("compare", false)
                 val tShot = System.currentTimeMillis()
-                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr, prep = prep, tuning = tuning, cropLongOverShort = crop) }.also { prep.close() }
+                val outcome = runCatching { processor.process(frames, chars!!, orientation, tShot, saveDng = raw, saveReference = compare, ultraHdr = hdr, prep = prep, tuning = tuning, cropLongOverShort = crop, zoom = shotZoom) }.also { prep.close() }
                 if (context.getSharedPreferences("holtzman", android.content.Context.MODE_PRIVATE).getBoolean("keepRaw", false) || com.everettpenne.holtzman.save.DebugFlags.on("keepraw")) {
                     runCatching {
                         val name = com.everettpenne.holtzman.camera.captureBaseName(tShot, java.util.TimeZone.getDefault().getOffset(tShot).toLong())
@@ -391,7 +392,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     fun shoot(highQuality: Boolean = false) {
         if (busy) return
         if (dataset) { if (pending == 0) shootDataset(); return }
-        if (computational && controller.rawAvailable) { shootBurst(); return }
+        // Below 1x the ultrawide lens is in use, but the RAW stream the burst merges is always the main lens (a dataset scene shot at 0.556x has f/1.7 RAW frames
+        // showing the 1x view), so a zoomed-out shot is the camera's own JPEG, which does follow the zoom
+        if (computational && controller.rawAvailable && controller.zoom >= 0.99f) { shootBurst(); return }
         if (pending > 0) return
         busy = true
         if (night) status = "Hold still…"

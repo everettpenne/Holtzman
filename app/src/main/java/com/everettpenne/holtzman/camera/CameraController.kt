@@ -755,7 +755,8 @@ class CameraController(private val context: Context) {
             return
         }
         precapturing = false
-        val raws = rawReader
+        // no RAW below 1x: the RAW stream is the main lens's whole sensor whatever the zoom, so asking for it could hold the shot on the main lens instead of the ultrawide
+        val raws = rawReader.takeIf { zoom >= 0.99f }
         try {
             val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(jpegs.surface)

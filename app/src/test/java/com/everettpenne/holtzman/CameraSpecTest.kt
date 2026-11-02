@@ -2,6 +2,7 @@ package com.everettpenne.holtzman
 
 import com.everettpenne.holtzman.camera.*
 import org.junit.Assert.*
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class CameraSpecTest {
@@ -157,5 +158,13 @@ class CameraSpecTest {
         assertEquals(400, r[0]); assertEquals(1200, r[1]); assertEquals(1200, r[2]); assertEquals(1800, r[3])
         val tiny = sensorBox(floatArrayOf(0.5f, 0.5f, 0.51f, 0.51f), 90, 1f, 4000, 3000)
         assertTrue(tiny[2] - tiny[0] >= 239 && tiny[3] - tiny[1] >= 239)
+    }
+
+    @Test fun theZoomWindowIsTheMiddleOfThePictureOnEvenPixels() {
+        assertArrayEquals(intArrayOf(0, 0, 4000, 3000), zoomWindow(4000, 3000, 1f))
+        assertArrayEquals(intArrayOf(0, 0, 4000, 3000), zoomWindow(4000, 3000, 0.556f))   // below 1x there is nothing wider in the picture to show
+        assertArrayEquals(intArrayOf(1000, 750, 2000, 1500), zoomWindow(4000, 3000, 2f))
+        val r = zoomWindow(4000, 3000, 2.7f)
+        assertArrayEquals(intArrayOf(1260, 944, 1480, 1110), r)
     }
 }

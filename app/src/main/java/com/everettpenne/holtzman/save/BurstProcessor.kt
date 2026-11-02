@@ -27,7 +27,7 @@ class BurstOutcome(val jpeg: Uri, val dng: Uri?, val referenceJpeg: Uri?, val re
  * frame on its own.
  */
 class BurstProcessor(private val saver: PhotoSaver, private val context: android.content.Context? = null) {
-    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null, tuning: BurstRender.LookTuning = BurstRender.LookTuning(), cropLongOverShort: Float? = null,
+    fun process(frames: List<BurstFrame>, characteristics: CameraCharacteristics, orientation: Int, timeMillis: Long, saveDng: Boolean = false, saveReference: Boolean = false, ultraHdr: Boolean = false, prep: BurstPrep? = null, tuning: BurstRender.LookTuning = BurstRender.LookTuning(), cropLongOverShort: Float? = null, zoom: Float = 1f,
                 documentFolder: String? = null, documentName: String = "holtzman.jpg"): BurstOutcome {   // documentFolder: write the picture into Documents/Holtzman/<folder> (dataset scenes), not the gallery
         val started = System.nanoTime()
         run {
@@ -85,10 +85,14 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             val tRender = System.nanoTime()
             val face = faceInRaw(frames[ref].result, characteristics, merged.width, merged.height)
             val (renderedBitmap, renderedRef) = renderBoth(gl, merged.samples, refRaw, merged.width, merged.height, settings, exposure, face)
-            // a crop (the camera's Ratio setting) is cut from the rendered picture, centred; the Ultra HDR gain map is built from the whole mosaic, so a cropped picture is saved without one
-            val mergedBitmap = cropLongOverShort?.let { cropped(renderedBitmap, it) } ?: renderedBitmap
-            val refBitmap = if (cropLongOverShort != null) renderedRef?.let { cropped(it, cropLongOverShort) } else renderedRef
-            val hdrAttached = ultraHdr && cropLongOverShort == null && UltraHdr.attachGainmap(mergedBitmap, merged.samples, merged.width, merged.height, frames[ref].result, characteristics)
+            // The zoom, then a crop (the camera's Ratio setting), are cut from the rendered picture, centred; the Ultra HDR gain map is built from the whole mosaic, so a
+            // zoomed or cropped picture is saved without one. Root cause of "the viewfinder zooms but the photo does not" (2026-11-02): the RAW stream is never cropped by
+            // CONTROL_ZOOM_RATIO (it is always the main lens's whole active array), so the burst photo came out at 1x whatever the viewfinder showed. The viewfinder at
+            // zoom z shows the middle 1/z of that array (see sensorPoint), so that is what is cut here; it keeps the sensor's own pixels (2x of 12 MP is 3 MP), not upscaled.
+            val zoomed = zoom > 1.01f
+            val mergedBitmap = renderedBitmap.let { if (zoomed) zoomedIn(it, zoom) else it }.let { b -> cropLongOverShort?.let { cropped(b, it) } ?: b }
+            val refBitmap = renderedRef?.let { if (zoomed) zoomedIn(it, zoom) else it }?.let { b -> cropLongOverShort?.let { cropped(b, it) } ?: b }
+            val hdrAttached = ultraHdr && cropLongOverShort == null && !zoomed && UltraHdr.attachGainmap(mergedBitmap, merged.samples, merged.width, merged.height, frames[ref].result, characteristics)
             Log.i("HoltzmanTiming", "rendered in ${(System.nanoTime() - tRender) / 1_000_000} ms (merge started ${(tRender - started) / 1_000_000} ms before)")
             val tJpeg = System.nanoTime()
             val mergedJpeg = (if (documentFolder != null) saver.writeJpegDocument(documentFolder, documentName, timeMillis, mergedBitmap, 95, orientation) else saver.writeJpeg("$base.jpg", timeMillis, mergedBitmap, 95, orientation)); mergedBitmap.recycle()
@@ -145,6 +149,12 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
         val region = com.everettpenne.holtzman.camera.faceRegion(face, array.width(), array.height(), 0f)
         Log.i("HoltzmanBurst", "face found: score ${face.score}, ${face.right - face.left} px wide in the active array")
         return com.everettpenne.holtzman.camera.scaleToRaw(region, array.width(), array.height(), rawW, rawH)
+    }
+
+    /** The part of [bitmap] the viewfinder showed at [zoom] ([zoomWindow]); the original is recycled. */
+    private fun zoomedIn(bitmap: android.graphics.Bitmap, zoom: Float): android.graphics.Bitmap {
+        val r = com.everettpenne.holtzman.camera.zoomWindow(bitmap.width, bitmap.height, zoom)
+        return android.graphics.Bitmap.createBitmap(bitmap, r[0], r[1], r[2], r[3]).also { if (it !== bitmap) bitmap.recycle() }
     }
 
     /** [bitmap] cut to [longOverShort] (long side over short side) about its centre, on even pixel offsets; the original is recycled. */

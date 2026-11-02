@@ -132,6 +132,13 @@ fun sensorBox(box: FloatArray, sensorOrientation: Int, zoom: Float, arrayWidth: 
     return intArrayOf(Math.round(x0).coerceIn(0, arrayWidth - 1), Math.round(y0).coerceIn(0, arrayHeight - 1), Math.round(x1).coerceIn(1, arrayWidth), Math.round(y1).coerceIn(1, arrayHeight))
 }
 
+/** The part of a [width] x [height] picture of the whole sensor that the viewfinder showed at [zoom]: its middle 1/zoom each way, on even pixels, as x, y, w, h. */
+fun zoomWindow(width: Int, height: Int, zoom: Float): IntArray {
+    val z = zoom.coerceAtLeast(1f)
+    val w = ((width / z).toInt() and 1.inv()).coerceIn(2, width); val h = ((height / z).toInt() and 1.inv()).coerceIn(2, height)
+    return intArrayOf(((width - w) / 2) and 1.inv(), ((height - h) / 2) and 1.inv(), w, h)
+}
+
 /** A zoom ratio kept inside what the camera offers. */
 fun clampZoom(ratio: Float, min: Float, max: Float): Float = if (ratio.isNaN()) min.coerceAtLeast(1f).coerceAtMost(max) else ratio.coerceIn(min, max)
 
