@@ -6,7 +6,7 @@ import org.junit.Test
 
 class ProControlsTest {
     @Test fun isoRunsFromTheLowestToTheHighestStopTheSensorOffers() {
-        assertEquals(50, isoFromT(0f, 29..7213)); assertEquals(3200, isoFromT(1f, 29..7213))
+        assertEquals(32, isoFromT(0f, 29..7213)); assertEquals(3200, isoFromT(1f, 29..7213))   // the Pixel 10a reaches ISO 29, and auto exposure uses 31-36 in daylight
         assertEquals(100, isoFromT(0f, 100..1600)); assertEquals(1600, isoFromT(1f, 100..1600))
         var last = 0; for (i in 0..20) { val v = isoFromT(i / 20f, 29..7213); assertTrue("not decreasing at $i", v >= last); last = v }
     }
