@@ -143,6 +143,12 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform1f(gl.loc(toneProgram, "saturation"), s.look.saturation)
             GLES31.glUniform1f(gl.loc(toneProgram, "hueChroma"), if (DebugFlags.on("nohue")) 0f else s.look.hueChroma)
             GLES31.glUniform1fv(gl.loc(toneProgram, "hueK[0]"), 12, com.everettpenne.ix.IxLook.HUE_CHROMA, 0)
+            GLES31.glUniform1fv(gl.loc(toneProgram, "hueV[0]"), 12, com.everettpenne.ix.IxLook.HUE_VIVID, 0)
+            // skin protection covers the detected face grown by 30% each way (forehead, ears, neck); no face: an empty box
+            if (face != null && face[2] > face[0] && face[3] > face[1]) {
+                val gx0 = (face[2] - face[0]) * 3 / 10; val gy0 = (face[3] - face[1]) * 3 / 10
+                GLES31.glUniform4i(gl.loc(toneProgram, "faceBox"), maxOf(0, face[0] - gx0), maxOf(0, face[1] - gy0), minOf(width, face[2] + gx0), minOf(height, face[3] + gy0))
+            } else GLES31.glUniform4i(gl.loc(toneProgram, "faceBox"), 0, 0, 0, 0)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveX[0]"), 12, com.everettpenne.ix.IxLook.CURVE_X, 0)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveY[0]"), 12, s.look.curve ?: com.everettpenne.ix.IxLook.CURVE_X, 0)
             val useAutoTone = s.look.autoTone > 0f && autoToneAvailable
@@ -631,7 +637,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 9) readonly buffer Base { float base[]; };
             uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform mat3 ccm; uniform float exposure;
             uniform float blackPoint; uniform float contrast; uniform float saturation; uniform float curveX[12]; uniform float curveY[12]; uniform int hasCurve;
-            uniform float hueChroma; uniform float hueK[12]; uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm; uniform int useClipRule;
+            uniform float hueChroma; uniform float hueK[12]; uniform float hueV[12]; uniform ivec4 faceBox; uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm; uniform int useClipRule;
             const float EPS = 0.02;
             $CHANNEL
             float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
@@ -645,7 +651,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 for (int i = 1; i < 12; i++) if (x <= curveX[i]) { float t = (x - curveX[i - 1]) / (curveX[i] - curveX[i - 1]); return curveY[i - 1] + (curveY[i] - curveY[i - 1]) * t; }
                 return curveY[11];
             }
-            vec3 look(vec3 c) {
+            vec3 look(vec3 c, bool inFace) {
                 c = clamp((c - blackPoint) / (1.0 - blackPoint), 0.0, 1.0);
                 c += contrast * (c * c * (3.0 - 2.0 * c) - c);
                 float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -657,9 +663,11 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                         float deg = degrees(atan(cr, cb)); if (deg < 0.0) deg += 360.0;
                         float t = deg / 30.0; int i = int(t) % 12; float f = t - floor(t);
                         float muted = mix(hueK[i], hueK[(i + 1) % 12], f);
-                        // vivid colours are not calmed but boosted a little (see IxLook.hueScale)
+                        float vividBoost = mix(hueV[i], hueV[(i + 1) % 12], f);
+                        // muted colours take the muted table, vivid ones the vivid table, and skin inside a face is kept calm (see IxLook.hueScale)
                         float v = clamp((sqrt(cb * cb + cr * cr) - 0.16) / 0.11, 0.0, 1.0); v = v * v * (3.0 - 2.0 * v);
-                        float table = mix(muted, 1.4, v);
+                        float table = mix(muted, vividBoost, v);
+                        if (inFace && deg >= 100.0 && deg <= 170.0) table = min(table, ${com.everettpenne.ix.IxLook.SKIN_CHROMA});
                         float lo = clamp((y - 0.04) / 0.11, 0.0, 1.0); float hi = clamp((y - 0.85) / 0.13, 0.0, 1.0);
                         float w = lo * lo * (3.0 - 2.0 * lo) * (1.0 - hi * hi * (3.0 - 2.0 * hi));
                         float sc = 1.0 + (table - 1.0) * hueChroma * w;
@@ -702,7 +710,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     // compress the range of the neighbourhood brightness about the scene's key: shadows come up, highlights ease down, local detail is untouched
                     o *= clamp(exp2((ltmC - 1.0) * (nb - ltmMid)), 0.6, 3.0);
                 }
-                vec3 d = look(vec3(srgb(shoulder(o.r)), srgb(shoulder(o.g)), srgb(shoulder(o.b))));
+                bool inFace = faceBox.z > faceBox.x && p.x >= faceBox.x && p.y >= faceBox.y && p.x < faceBox.z && p.y < faceBox.w;
+                vec3 d = look(vec3(srgb(shoulder(o.r)), srgb(shoulder(o.g)), srgb(shoulder(o.b))), inFace);
                 pixelsOut[p.y * size.x + p.x] = byteOf(d.r) | (byteOf(d.g) << 8) | (byteOf(d.b) << 16) | 0xFF000000u;
             }
         """

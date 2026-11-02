@@ -79,25 +79,41 @@ public class IxLook(
          * app's chroma is about 0.7x ours overall, 0.6x in orange, yellow and yellow-green (skin reads red and harsh in ours, paler and peach in the Pixel's),
          * 0.7-0.8x in violet and magenta, 1.0x in blue. The look's own saturation of 0.9 is part of that, so these are the multipliers still needed.
          */
-        public const val VIVID_BOOST: Float = 1.4f
-        // Softened from (1.0, 0.88, 0.8, 0.78, 0.66, 0.62, 0.62, 0.68, 0.76, 0.9, 0.97, 1.0): against the Pixel app on the workshop scene a muted wooden worktop
-        // measured chroma 19 in ours to 33 in the Pixel's, so the full flat-area fit made muted wood and paint dull; 0.85 keeps some calming for skin.
-        public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.92f, 0.88f, 0.88f, 0.85f, 0.85f, 0.85f, 0.87f, 0.9f, 0.95f, 1.0f, 1.0f)
-        /** The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. */
-        public fun hueScale(r: Float, g: Float, b: Float, strength: Float): Float {
+        /**
+         * Muted-colour multipliers, by hue as above. History: the flat-area fit gave (1.0, 0.88, 0.8, 0.78, 0.66, 0.62, 0.62, 0.68, 0.76, 0.9, 0.97, 1.0); against
+         * the Pixel app on the workshop scene (2026-11-02, phone) that made a muted wooden worktop chroma 19 to the Pixel's 33, and a first softening to ~0.85
+         * still gave 23. The worktop and the Pixel's sit at the same hue (140-144 degrees); the Pixel's has 1.7x the chroma. Skin sits at the same hue and
+         * chroma and the flat-area fit says the Pixel renders it paler, so muted orange is warmed here (1.35 overshot to 37 against 30, so 1.25) and skin is protected inside a detected face instead
+         * ([SKIN_CHROMA], `protectSkin`).
+         */
+        public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.92f, 0.88f, 0.9f, 1.25f, 1.25f, 1.2f, 1.0f, 0.9f, 0.95f, 1.0f, 1.0f)
+        /**
+         * Vivid-colour multipliers, by hue as above. A single boost of 1.3 then 1.4 brought the workshop panels to orange 81 / Pixel 76, red board 52 / 52, teal
+         * 26 / 25, but yellow only 52 / 68: the yellow panel has the Pixel's hue (166 against 167 degrees) at about 0.73 of its chroma, and sits partly in the
+         * muted-to-vivid ramp, so yellow gets more.
+         */
+        public val HUE_VIVID: FloatArray = floatArrayOf(1.4f, 1.4f, 1.4f, 1.4f, 1.4f, 1.75f, 1.75f, 1.5f, 1.4f, 1.4f, 1.4f, 1.4f)
+        /** The most chroma skin-hued colour (100-170 degrees) may get inside a detected face: the flat-area fit's paler, peach skin. */
+        public const val SKIN_CHROMA: Float = 0.85f
+        /**
+         * The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. [protectSkin] is true inside a
+         * detected face (the GPU renderer knows it; the CPU fallback does not).
+         */
+        public fun hueScale(r: Float, g: Float, b: Float, strength: Float, protectSkin: Boolean = false): Float {
             val y = 0.2126f * r + 0.7152f * g + 0.0722f * b
             val cb = (b - y) / 1.8556f; val cr = (r - y) / 1.5748f
             if (cb * cb + cr * cr < 1e-8f) return 1f
             var deg = Math.toDegrees(Math.atan2(cr.toDouble(), cb.toDouble())).toFloat(); if (deg < 0f) deg += 360f
             val t = deg / 30f; val i = t.toInt() % 12; val f = t - t.toInt()
             val muted = HUE_CHROMA[i] + (HUE_CHROMA[(i + 1) % 12] - HUE_CHROMA[i]) * f
-            // The fit above comes from flat, muted areas (skin, wood, walls). Vivid objects go the other way: against the Pixel app on a bench scene (2026-11-02,
-            // phone) its orange panel had chroma 81 to our 49 and its yellows 67-74 to our 55-59; with the first boost of 1.15 a yellow panel (display chroma about 0.26
-            // before this stage) was still calmed to 0.78x and measured 47 to the Pixel's 68, blue channel 51 to its 5. Skin sits near 0.16, vivid paint from 0.26,
-            // so the calming fades out between 0.16 and 0.27 and gives way to a boost of 1.3 (the Pixel/ours ratios were 1.27 yellow, 1.29 red). At 1.3 the workshop panels measured yellow 53 to the Pixel's 68, red PCB 48 to 54, orange 68; raised to 1.4.
+            val vividBoost = HUE_VIVID[i] + (HUE_VIVID[(i + 1) % 12] - HUE_VIVID[i]) * f
+            // The flat-area fit came from muted areas (skin, wood, walls). Vivid objects go the other way: on the bench scene the Pixel's orange panel had chroma
+            // 81 to our 49 and its yellows 67-74 to our 55-59. Skin sits near display chroma 0.16, vivid paint from 0.26, so the muted multiplier gives way to the
+            // vivid one between 0.16 and 0.27.
             val v = ((cb * cb + cr * cr).let { Math.sqrt(it.toDouble()).toFloat() } - 0.16f) / 0.11f
             val vivid = v.coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
-            val table = muted + (VIVID_BOOST - muted) * vivid
+            var table = muted + (vividBoost - muted) * vivid
+            if (protectSkin && deg in 100f..170f) table = minOf(table, SKIN_CHROMA)
             val lo = ((y - 0.04f) / 0.11f).coerceIn(0f, 1f); val hi = ((y - 0.85f) / 0.13f).coerceIn(0f, 1f)
             val w = lo * lo * (3f - 2f * lo) * (1f - hi * hi * (3f - 2f * hi))
             return 1f + (table - 1f) * strength * w
