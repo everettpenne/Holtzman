@@ -141,6 +141,19 @@ public object IxRender {
     /** How far a pixel's raw signal (0 black, 1 the sensor's limit) is into clipping: 0 below 0.92 of the limit, 1 at the limit, smooth between. */
     internal fun smoothClip(raw: Float): Float { val t = ((raw - 0.92f) / 0.08f).coerceIn(0f, 1f); return t * t * (3f - 2f * t) }
 
+    /**
+     * How much of its colour a pixel of linear luminance [y] keeps: 0 at [SHADOW_CHROMA_LO] and below, 1 at [SHADOW_CHROMA_HI] and above, smooth between.
+     * Root cause of the blocky, blotchy dark areas seen in dataset scenes of 2026-11-02: in deep shadow the signal is at the noise floor, and the colour
+     * matrix (blue row 0.01, -1.05, 2.03) turns the independent noise of the three channels into large colour swings, with negative channels clamped to
+     * zero afterwards, so shadows came out as saturated purple/green/brown patches that the denoiser then smoothed into flat blobs. Measured on the raw
+     * frames of scene_20261102_091456: the darkest 12% of the picture sits 0.3-0.65 counts (of 959) above black, below one count, so its colour is
+     * rounding noise, which the exposure and local-tone gain then lifts into view. Where there is no signal there is no colour to keep, so colour fades
+     * out toward the pixel's own luminance, judged BEFORE that gain (judged after it, the first version let the patches through).
+     */
+    internal fun shadowChroma(y: Float): Float { val t = ((y - SHADOW_CHROMA_LO) / (SHADOW_CHROMA_HI - SHADOW_CHROMA_LO)).coerceIn(0f, 1f); return t * t * (3f - 2f * t) }
+    internal const val SHADOW_CHROMA_LO: Float = 0.002f
+    internal const val SHADOW_CHROMA_HI: Float = 0.012f
+
     /** Linear light to the sRGB transfer curve (0..1). */
     public fun srgbEncode(x: Float): Float { val c = x.coerceIn(0f, 1f); return if (c <= 0.0031308f) 12.92f * c else (1.055 * c.toDouble().pow(1.0 / 2.4) - 0.055).toFloat() }
 
@@ -222,9 +235,11 @@ public object IxRender {
             // eased toward white (every channel to the brightest of the three): a clipped lamp is white, as a lamp is.
             val clipMix = smoothClip(max(r, max(gr, b)))
             if (clipMix > 0f) { val top = max(wr, max(wg, wb)); wr += clipMix * (top - wr); wg += clipMix * (top - wg); wb += clipMix * (top - wb) }
-            val cr = (m[0] * wr + m[1] * wg + m[2] * wb) * exposure
-            val cg = (m[3] * wr + m[4] * wg + m[5] * wb) * exposure
-            val cb = (m[6] * wr + m[7] * wg + m[8] * wb) * exposure
+            var cr = m[0] * wr + m[1] * wg + m[2] * wb
+            var cg = m[3] * wr + m[4] * wg + m[5] * wb
+            var cb = m[6] * wr + m[7] * wg + m[8] * wb
+            // colour fades with the signal as the sensor measured it, before the exposure gain lifts it (see shadowChroma)
+            run { val yl = max(0.2126f * cr + 0.7152f * cg + 0.0722f * cb, 0f); val k = shadowChroma(yl); cr = (yl + (cr - yl) * k) * exposure; cg = (yl + (cg - yl) * k) * exposure; cb = (yl + (cb - yl) * k) * exposure }
             val disp = floatArrayOf(srgbEncode(shoulder(cr)), srgbEncode(shoulder(cg)), srgbEncode(shoulder(cb)))
             s.look.apply(disp)
             val pr = (disp[0] * 255f + 0.5f).toInt(); val pg = (disp[1] * 255f + 0.5f).toInt(); val pb = (disp[2] * 255f + 0.5f).toInt()
