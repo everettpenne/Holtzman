@@ -163,7 +163,12 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                     val counts = (GLES31.glMapBufferRange(GLES31.GL_SHADER_STORAGE_BUFFER, 0, 256 * 4, GLES31.GL_MAP_READ_BIT) as ByteBuffer).order(ByteOrder.nativeOrder()).asIntBuffer()
                     val hist = IntArray(256).also { counts.get(it) }
                     GLES31.glUnmapBuffer(GLES31.GL_SHADER_STORAGE_BUFFER)
-                    var curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone, targets = com.everettpenne.ix.IxAutoTone.targetsFor(s.look.exposureEv))
+                    // The targets follow the scene (the Pixel app renders dim and low-contrast scenes much lighter than contrasty ones; one fixed row left them too dark),
+                    // predicted from the raw mosaic. If the mosaic says nothing, or the "fixedtone" debug flag is on, the fixed row is used.
+                    val sceneFeatures = if (DebugFlags.on("fixedtone")) null else com.everettpenne.ix.IxSceneTone.features(raw, width, height, s.cfa, s.black, s.white, s.wb, s.ccm)
+                    val baseTargets = sceneFeatures?.let { com.everettpenne.ix.IxSceneTone.targets(it) } ?: com.everettpenne.ix.IxAutoTone.TARGETS
+                    android.util.Log.i("HoltzmanGpu", "tone targets " + (if (sceneFeatures != null) "from the scene " + sceneFeatures.joinToString(" ") { "%.2f".format(java.util.Locale.ROOT, it) } else "fixed") + ": " + baseTargets.joinToString(" ") { "%.0f".format(java.util.Locale.ROOT, it * 255f) })
+                    var curve = com.everettpenne.ix.IxAutoTone.curve(hist, s.look.autoTone, targets = com.everettpenne.ix.IxAutoTone.targetsFor(s.look.exposureEv, baseTargets))
                     if (face != null && face[2] - face[0] >= 16 && face[3] - face[1] >= 16) {
                         // a face: measure its own brightness (every pixel in its box) and keep it out of the shadows and highlights
                         val faceHist = IntArray(1); GLES31.glGenBuffers(1, faceHist, 0)
