@@ -14,4 +14,6 @@ object DebugFlags {
         get() = if (System.currentTimeMillis() - setAt > 10 * 60 * 1000L) "" else stored
         set(v) { stored = v; setAt = System.currentTimeMillis() }
     fun on(name: String): Boolean = raw.split(',').any { it.trim() == name }
+    /** A numeric switch written name=value (for example denoise=0.4), or [default] when it is absent. */
+    fun value(name: String, default: Float): Float = raw.split(',').map { it.trim() }.firstOrNull { it.startsWith("$name=") }?.substringAfter('=')?.toFloatOrNull() ?: default
 }

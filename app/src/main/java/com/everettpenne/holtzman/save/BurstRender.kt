@@ -16,7 +16,7 @@ import com.everettpenne.ix.IxShadingMap
 object BurstRender {
     /** The finishing look, tuned against the Pixel camera app's output of the same scenes (docs/ix-pipeline.md). */
     val LOOK = com.everettpenne.ix.IxLook(blackPoint = 0.04f, contrast = 0.4f, saturation = 0.9f, sharpen = 1.8f, sharpenCore = 1.5f,
-        denoise = 0.7f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f, localTone = 0.35f, grain = 1.2f,
+        denoise = 0.45f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f, localTone = 0.35f, grain = 1.2f,
         autoTone = 1f,
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)
         curve = floatArrayOf(0f, 4f, 13f, 34f, 55f, 75f, 106f, 132f, 156f, 180f, 203f, 245f).map { it / 255f }.toFloatArray())
@@ -87,7 +87,7 @@ object BurstRender {
         val l = tuned(LOOK, tuning)
         if (DebugFlags.raw.isEmpty()) return l
         return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, l.sharpen, l.sharpenCore, l.curve,
-            denoise = if (DebugFlags.on("nofinish")) 0f else l.denoise, detail = l.detail, detailCore = l.detailCore, clarity = l.clarity, chromaSmoothing = l.chromaSmoothing,
+            denoise = if (DebugFlags.on("nofinish")) 0f else DebugFlags.value("denoise", l.denoise), detail = DebugFlags.value("detail", l.detail), detailCore = DebugFlags.value("core", l.detailCore), clarity = DebugFlags.value("clarity", l.clarity), chromaSmoothing = DebugFlags.value("chroma", l.chromaSmoothing),
             localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone,
             exposureEv = l.exposureEv, shadows = l.shadows)
     }
