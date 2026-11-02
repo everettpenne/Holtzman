@@ -13,9 +13,14 @@ import kotlin.math.min
  */
 public object IxAutoTone {
     /** Fractions of the picture's pixels at or below a brightness. */
-    public val RANKS: FloatArray = floatArrayOf(0f, 0.01f, 0.05f, 0.25f, 0.5f, 0.95f, 0.99f, 1f)
-    /** The display brightness (0..1) each rank is taken to: the medians of the Pixel camera app's luma at those ranks over 68 same-moment pairs (2026-10-28). */
-    public val TARGETS: FloatArray = floatArrayOf(0f, 7.6f, 23.9f, 66.5f, 101.7f, 199.8f, 219.1f, 255f).map { it / 255f }.toFloatArray()
+    public val RANKS: FloatArray = floatArrayOf(0f, 0.01f, 0.05f, 0.25f, 0.5f, 0.75f, 0.95f, 0.99f, 1f)
+    /**
+     * The display brightness (0..1) each rank is taken to: the medians of the Pixel camera app's luma at those ranks over 68 same-moment pairs (2026-10-28);
+     * the 75th percentile (150) is the median over the 213 pairs of 2026-11-02, added so [IxSceneTone]'s seven predictions (1, 5, 25, 50, 75, 95, 99 %)
+     * land on their own ranks. Without it they were shifted one rank up from the 75th: the p75 prediction became the 95th-percentile target and the p95
+     * prediction the 99th, so every picture's highlights were brought 15 to 25 levels too low (workshop scene: 95th percentile 171 to the Pixel's 186).
+     */
+    public val TARGETS: FloatArray = floatArrayOf(0f, 7.6f, 23.9f, 66.5f, 101.7f, 150f, 199.8f, 219.1f, 255f).map { it / 255f }.toFloatArray()
     public const val BINS: Int = 256
 
     /**

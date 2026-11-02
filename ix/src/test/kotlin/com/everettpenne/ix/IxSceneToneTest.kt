@@ -7,7 +7,7 @@ import org.junit.Test
 class IxSceneToneTest {
     @Test fun averageSceneGivesTheFittedMediansShrunkTowardTheFixedRow() {
         val t = IxSceneTone.targets(floatArrayOf(-4.08625f, 1.47697f, 5.63022f, 2.28115f, 1.04859f, 0.09063f))
-        assertEquals((0.7f * 107.2f + 0.3f * 101.7f) / 255f, t[4], 0.002f); assertEquals(0f, t[0], 0f); assertEquals(1f, t[7], 0f)
+        assertEquals((0.7f * 107.2f + 0.3f * 101.7f) / 255f, t[4], 0.002f); assertEquals(0f, t[0], 0f); assertEquals(1f, t[8], 0f); assertEquals((0.7f * 146.6f + 0.3f * 150f) / 255f, t[5], 0.003f)
     }
     @Test fun brighterRawGivesBrighterTargetsAndStaysMonotone() {
         val dim = IxSceneTone.targets(floatArrayOf(-7f, 1f, 4f, 1f, 1f, 0.05f)); val bright = IxSceneTone.targets(floatArrayOf(-2f, 1f, 4f, 1f, 1f, 0.05f))

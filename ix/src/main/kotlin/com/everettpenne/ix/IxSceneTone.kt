@@ -75,6 +75,7 @@ public object IxSceneTone {
      * Pixel app's pictures actually occupy and always rising, so a strange scene cannot ask for a nonsensical row; the ends stay 0 and 1.
      */
     public fun targets(features: FloatArray): FloatArray {
+        check(IxAutoTone.RANKS.size == 9) { "the seven predicted ranks must line up with IxAutoTone.RANKS" }
         val out = FloatArray(IxAutoTone.RANKS.size)
         var prev = 0f
         for (k in 0 until 7) {
@@ -87,7 +88,7 @@ public object IxSceneTone {
             val t = (y / 255f).coerceIn(0.01f, 0.97f)
             out[k + 1] = max(t, prev + 0.01f).also { prev = it }
         }
-        out[0] = 0f; out[7] = 1f
+        out[0] = 0f; out[IxAutoTone.RANKS.size - 1] = 1f
         return out
     }
 }
