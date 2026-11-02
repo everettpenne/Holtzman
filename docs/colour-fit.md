@@ -30,3 +30,8 @@ Each pair (our `holtzman.jpg`, the Pixel Camera app's photo of the same moment) 
 2. Then a small, smooth colour stage: chroma by lightness and hue (orange/yellow/yellow-green about 0.6x, violet/magenta 0.7-0.8x) with skin protection, applied in lightness-chroma-hue space, not in RGB.
 3. Only consider a 3D LUT as the final stage if it is smooth, monotone in lightness and checked for the sky artefact; keep `pixel_look.cube` as a reference, not as a shipped asset.
 4. Open: only 52 scenes at one look; outdoor scenes with people and bright sun are thin.
+
+## Shipped 2026-11-02 (local commits, not released)
+- Scene-adaptive tone targets (`IxSceneTone`, blended 0.7 with the fixed row), shadow colour fade judged before the exposure gain, quantisation floor in the finish.
+- Hue-dependent chroma (`IxLook.HUE_CHROMA`, `hueChroma`, switch `nohue`): multipliers 0.62-0.68 for orange/yellow/yellow-green, 0.8-0.88 violet/magenta, 1.0 blue. On the bench scene mean saturation fell from 0.191 to 0.144 with the blue handles unchanged. Not yet judged against the Pixel app on skin or outdoor scenes.
+- Noise filtering off by default (finish denoise 0, TPU denoiser behind `tpu`).
