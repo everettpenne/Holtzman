@@ -79,7 +79,7 @@ public class IxLook(
          * app's chroma is about 0.7x ours overall, 0.6x in orange, yellow and yellow-green (skin reads red and harsh in ours, paler and peach in the Pixel's),
          * 0.7-0.8x in violet and magenta, 1.0x in blue. The look's own saturation of 0.9 is part of that, so these are the multipliers still needed.
          */
-        public const val VIVID_BOOST: Float = 1.15f
+        public const val VIVID_BOOST: Float = 1.4f
         public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.88f, 0.8f, 0.78f, 0.66f, 0.62f, 0.62f, 0.68f, 0.76f, 0.9f, 0.97f, 1.0f)
         /** The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. */
         public fun hueScale(r: Float, g: Float, b: Float, strength: Float): Float {
@@ -90,9 +90,10 @@ public class IxLook(
             val t = deg / 30f; val i = t.toInt() % 12; val f = t - t.toInt()
             val muted = HUE_CHROMA[i] + (HUE_CHROMA[(i + 1) % 12] - HUE_CHROMA[i]) * f
             // The fit above comes from flat, muted areas (skin, wood, walls). Vivid objects go the other way: against the Pixel app on a bench scene (2026-11-02,
-            // phone) its orange panel had chroma 81 to our 49 and its yellows 67-74 to our 55-59, about 1.2x what the picture had before this stage. So the
-            // calming fades out as the colour gets vivid (display chroma 0.14 to 0.30) and gives way to a small boost.
-            val v = ((cb * cb + cr * cr).let { Math.sqrt(it.toDouble()).toFloat() } - 0.14f) / 0.16f
+            // phone) its orange panel had chroma 81 to our 49 and its yellows 67-74 to our 55-59; with the first boost of 1.15 a yellow panel (display chroma about 0.26
+            // before this stage) was still calmed to 0.78x and measured 47 to the Pixel's 68, blue channel 51 to its 5. Skin sits near 0.16, vivid paint from 0.26,
+            // so the calming fades out between 0.16 and 0.27 and gives way to a boost of 1.3 (the Pixel/ours ratios were 1.27 yellow, 1.29 red). At 1.3 the workshop panels measured yellow 53 to the Pixel's 68, red PCB 48 to 54, orange 68; raised to 1.4.
+            val v = ((cb * cb + cr * cr).let { Math.sqrt(it.toDouble()).toFloat() } - 0.16f) / 0.11f
             val vivid = v.coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
             val table = muted + (VIVID_BOOST - muted) * vivid
             val lo = ((y - 0.04f) / 0.11f).coerceIn(0f, 1f); val hi = ((y - 0.85f) / 0.13f).coerceIn(0f, 1f)
