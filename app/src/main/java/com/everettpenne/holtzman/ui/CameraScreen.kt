@@ -224,12 +224,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
     }
     DisposableEffect(Unit) { onDispose { controller.release() } }
-    LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality, instant, longCapture) {
+    // Below 1x the camera is opened without a RAW stream: with one it stays on the main lens (the .6 view was the 1x view, 2026-11-02), so the ultrawide needs the plain session.
+    // The shot there is the camera's own JPEG. Crossing 1x reopens the camera at the zoom it had.
+    val wide = zoom < 0.99f && !dataset && !videoMode
+    LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality, instant, longCapture, wide) {
         val surface = previewSurface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
         previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
-        controller.open(lens, surface, raw || hdr || computational || dataset, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational || dataset, instant && !longCapture && computational && !dataset, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here

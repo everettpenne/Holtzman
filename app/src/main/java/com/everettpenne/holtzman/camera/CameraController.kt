@@ -369,7 +369,7 @@ class CameraController(private val context: Context) {
      * once frames are flowing; [onError] says what went wrong.
      */
     @SuppressLint("MissingPermission")   // the screen asks for CAMERA before it ever calls this
-    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, zsl: Boolean = false, onReady: () -> Unit, onError: (String) -> Unit) {
+    fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, zsl: Boolean = false, startZoom: Float = 1f, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
         shake.start()
         val gen = ++generation
@@ -384,7 +384,7 @@ class CameraController(private val context: Context) {
             map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }?.let { Dim(it.width, it.height) } else null
 
         val zr = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-        zoomMin = zr?.lower ?: 1f; zoomMax = zr?.upper ?: 1f; zoom = clampZoom(1f, zoomMin, zoomMax); focusRegion = null
+        zoomMin = zr?.lower ?: 1f; zoomMax = zr?.upper ?: 1f; zoom = clampZoom(startZoom, zoomMin, zoomMax); focusRegion = null
         zoomSupportedInExtension = extension != null && runCatching { manager.getCameraExtensionCharacteristics(id).getAvailableCaptureRequestKeys(extension).contains(CaptureRequest.CONTROL_ZOOM_RATIO) }.getOrDefault(false)
         flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         characteristics = chars; cameraId = id; previewSize = preview; stillSize = still; rawSize = raw; previewSurface = surface; this.extension = extension; videoQuality = video
