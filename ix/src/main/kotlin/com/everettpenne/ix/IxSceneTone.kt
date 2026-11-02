@@ -17,7 +17,8 @@ import kotlin.math.sqrt
  * (`fit --drop ev`, leave-one-scene-out error 11.9 luma against 18.6 for the fixed row); regenerate them there, do not hand-edit them.
  */
 public object IxSceneTone {
-    private const val BLOCK = 8   // blocks of 8x8 RGGB quads = 16x16 sensor pixels
+    private const val BLOCK = 8
+    private const val BLEND = 0.7f   // blocks of 8x8 RGGB quads = 16x16 sensor pixels
 
     private val MU = floatArrayOf(-4.08625f, 1.47697f, 5.63022f, 2.28115f, 1.04859f, 0.09063f)
     private val SD = floatArrayOf(0.94532f, 0.44190f, 1.68679f, 1.04670f, 0.48211f, 0.07239f)
@@ -79,6 +80,10 @@ public object IxSceneTone {
         for (k in 0 until 7) {
             var y = BASE[k]
             for (f in 0 until 6) y += W[f][k] * ((features[f] - MU[f]) / SD[f]).coerceIn(-2.5f, 2.5f)
+            // Shrunk toward the fixed row: the fit is linear and extrapolates badly at the extremes. A contrasty dim bench scene (dynamic range 2.2 sd above
+            // the pairs) was predicted a median of 83 and a 25th percentile of 43 where the Pixel app rendered 104 and 67, so the shadows came out dark and
+            // blocky. At 0.7 the held-out error is 12.1 against 11.9 for the pure fit and 18.6 for the fixed row.
+            y = BLEND * y + (1f - BLEND) * IxAutoTone.TARGETS[k + 1] * 255f
             val t = (y / 255f).coerceIn(0.01f, 0.97f)
             out[k + 1] = max(t, prev + 0.01f).also { prev = it }
         }

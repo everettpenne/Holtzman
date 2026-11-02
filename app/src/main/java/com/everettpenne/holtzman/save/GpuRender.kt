@@ -522,7 +522,11 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 vec3 c = px(p.x, p.y);
                 float l = luma(c);
                 float m = l3(p.x, p.y);
-                float sm = noiseAt(m);
+                // The picture arrives in 8 bits, so its quantisation steps (one level, 1/255) are real structure to this filter. Where the measured noise is
+                // below about three levels (the dark and mid-tone areas of a clean merged frame) the average took each step for an edge and the detail boost
+                // sharpened it into hard contour lines around flat plateaus (the blocky patches in the shadows, absent with the finish off). Taking the noise as
+                // at least three levels makes steps count as noise: they are averaged away and cored out.
+                float sm = max(noiseAt(m), 3.0 / 255.0);
                 float rs2 = 2.0 * denoise * denoise * sm * sm + 1e-12;
                 const float gk[5] = float[5](0.0625, 0.25, 0.375, 0.25, 0.0625);
                 float numL = 0.0; vec3 numC = vec3(0.0); float den = 0.0; float g1 = 0.0;
