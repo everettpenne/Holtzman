@@ -70,7 +70,8 @@ class SubjectFinder private constructor(private val interpreter: Interpreter, pr
             val t = System.nanoTime()
             // the TPU first; any failure there (no driver, an emulator) falls back to the CPU
             runCatching {
-                val d = NnApiDelegate(NnApiDelegate.Options().setAcceleratorName("google-edgetpu").setExecutionPreference(NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED).setAllowFp16(true).setUseNnapiCpu(false))
+                val d = NnApiDelegate(NnApiDelegate.Options().setAcceleratorName("google-edgetpu").setExecutionPreference(NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED).setAllowFp16(true).setUseNnapiCpu(false)
+                    .setCacheDir(context.codeCacheDir.absolutePath).setModelToken("deeplab-v3-${bytes.size}"))   // the TPU's compilation, kept between starts
                 try { SubjectFinder(Interpreter(model, Interpreter.Options().addDelegate(d)), d, "TPU") } catch (e: Throwable) { d.close(); throw e }
             }.onSuccess { Log.i(TAG, "subject finder on the TPU, ready in ${(System.nanoTime() - t) / 1_000_000} ms"); return it }
                 .onFailure { Log.i(TAG, "subject finder: TPU unavailable ($it), using the CPU") }

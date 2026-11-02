@@ -25,6 +25,11 @@ public object IxSubject {
     public class Subject(public val label: Int, public val left: Float, public val top: Float, public val right: Float, public val bottom: Float, public val cover: Float) {
         public val name: String get() = LABELS.getOrElse(label) { "object" }
         /**
+         * Whether the segmentation's answer is worth more than the depth map's: not for furniture that is usually the room (chair, table, sofa) nor for a
+         * patch under 2 % of the frame. On the phone a 0.7 % "chair" and the depth map's foreground object took turns, and focus jumped between them.
+         */
+        public val strong: Boolean get() = label < PRIOR.size && PRIOR[label] >= 1f && cover >= 0.02f
+        /**
          * Where focus should look inside the box: the whole box, except for a person or an animal, where the upper part (head and shoulders) is what
          * should be sharp; a full-length person focused on the middle of the box gets a sharp belt and soft eyes.
          */

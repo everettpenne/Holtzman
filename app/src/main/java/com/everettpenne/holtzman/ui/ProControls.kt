@@ -35,6 +35,7 @@ import com.everettpenne.ix.IxSubject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.floor
@@ -55,6 +56,14 @@ fun rememberSubjectTracking(view: TextureView?, controller: CameraController, en
     LaunchedEffect(view, enabled) {
         if (!enabled || view == null) { controller.subjectBox = null; state.value = null; return@LaunchedEffect }
         val finder = withContext(Dispatchers.Default) { SubjectFinder.shared(context) }
+        // depth, for the foreground subject when the segmentation recognises nothing (a bottle, a board, a flag); it takes seconds to compile for the TPU the
+        // first time, so it loads beside the loop, which uses it once it is there
+        var depth: com.everettpenne.holtzman.ml.DepthFinder? = null
+        launch(Dispatchers.Default) { depth = com.everettpenne.holtzman.ml.DepthFinder.shared(context) }
+        val small = Bitmap.createBitmap(com.everettpenne.holtzman.ml.DepthFinder.SIZE, com.everettpenne.holtzman.ml.DepthFinder.SIZE, Bitmap.Config.ARGB_8888)
+        val smallCanvas = android.graphics.Canvas(small)
+        val toSmall = android.graphics.Matrix().apply { setScale(com.everettpenne.holtzman.ml.DepthFinder.SIZE.toFloat() / SubjectFinder.SIZE, com.everettpenne.holtzman.ml.DepthFinder.SIZE.toFloat() / SubjectFinder.SIZE) }
+        var timed = 0
         val bmp = Bitmap.createBitmap(SubjectFinder.SIZE, SubjectFinder.SIZE, Bitmap.Config.ARGB_8888)
         val upright = Bitmap.createBitmap(SubjectFinder.SIZE, SubjectFinder.SIZE, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(upright)
@@ -67,7 +76,17 @@ fun rememberSubjectTracking(view: TextureView?, controller: CameraController, en
                     // pictures) called a black camera case a person. The frame is turned upright for it, and the box turned back.
                     val turn = ((deviceDegrees() % 360) + 360) % 360
                     val input = if (turn == 0) bmp else { canvas.save(); canvas.rotate(turn.toFloat(), SubjectFinder.SIZE / 2f, SubjectFinder.SIZE / 2f); canvas.drawBitmap(bmp, 0f, 0f, null); canvas.restore(); upright }
-                    val candidate = withContext(Dispatchers.Default) { runCatching { finder.find(input)?.let { unturn(it, turn) } }.onFailure { android.util.Log.w("HoltzmanSubject", "subject finder failed", it) }.getOrNull() }
+                    val candidate = withContext(Dispatchers.Default) {
+                        runCatching {
+                            val t0 = System.nanoTime()
+                            val seg = finder.find(input)
+                            val t1 = System.nanoTime()
+                            // a person, an animal or a clear object from the segmentation; otherwise what stands out in depth (falling back to a weak segment)
+                            val found = if (seg != null && seg.strong) seg else depth?.let { smallCanvas.drawBitmap(input, toSmall, null); it.find(small) } ?: seg
+                            if (timed < 4) { timed++; android.util.Log.i("HoltzmanSubject", "segmentation ${(t1 - t0) / 1_000_000} ms on ${finder.where}, depth ${(System.nanoTime() - t1) / 1_000_000} ms on ${depth?.where}") }
+                            found?.let { unturn(it, turn) }
+                        }.onFailure { android.util.Log.w("HoltzmanSubject", "subject finder failed", it) }.getOrNull()
+                    }
                     // how many frames running this candidate (or the lack of one) has been seen: a new subject must be seen twice before focus moves to it
                     streak = if ((candidate == null && lastCandidate == null) || (candidate != null && lastCandidate != null && candidate.label == lastCandidate.label && IxSubject.overlap(candidate, lastCandidate) > 0.2f)) streak + 1 else 1
                     lastCandidate = candidate
