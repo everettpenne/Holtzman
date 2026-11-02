@@ -83,7 +83,7 @@ fun rememberSubjectTracking(view: TextureView?, controller: CameraController, en
                             val t1 = System.nanoTime()
                             // a person, an animal or a clear object from the segmentation; otherwise what stands out in depth (falling back to a weak segment)
                             val found = if (seg != null && seg.strong) seg else depth?.let { smallCanvas.drawBitmap(input, toSmall, null); it.find(small) } ?: seg
-                            if (timed < 4) { timed++; android.util.Log.i("HoltzmanSubject", "segmentation ${(t1 - t0) / 1_000_000} ms on ${finder.where}, depth ${(System.nanoTime() - t1) / 1_000_000} ms on ${depth?.where}") }
+                            if (timed < 4) { timed++; android.util.Log.i("HoltzmanSubject", "segmentation ${(t1 - t0) / 1_000_000} ms on ${finder.where}" + (depth?.let { ", depth ${(System.nanoTime() - t1) / 1_000_000} ms on ${it.where}" } ?: ", depth still loading")) }
                             found?.let { unturn(it, turn) }
                         }.onFailure { android.util.Log.w("HoltzmanSubject", "subject finder failed", it) }.getOrNull()
                     }
