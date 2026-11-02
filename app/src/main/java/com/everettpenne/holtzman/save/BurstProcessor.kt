@@ -51,8 +51,9 @@ class BurstProcessor(private val saver: PhotoSaver, private val context: android
             val gl = ready?.gl ?: runCatching { GlContext() }.onFailure { Log.w("HoltzmanBurst", "no GPU context, using the CPU: $it") }.getOrNull()
             Log.i("HoltzmanTiming", "GL context took ${(System.nanoTime() - tG) / 1_000_000} ms")
             try {
-            // the learned denoiser on the TPU, when the app carries a model and the phone has the driver; otherwise the classical denoise runs inside the merge
-            val tpu = if (DebugFlags.on("notpu")) null else context?.let { com.everettpenne.holtzman.ml.TpuDenoiser.shared(it) }
+            // the learned denoiser on the TPU is OFF unless the debug switch "tpu" is given (it left colour blobs on clean scenes, 2026-11-02); the classical denoise inside the merge runs instead.
+            // Otherwise: the learned denoiser on the TPU, when the app carries a model and the phone has the driver; otherwise the classical denoise runs inside the merge
+            val tpu = if (!DebugFlags.on("tpu")) null else context?.let { com.everettpenne.holtzman.ml.TpuDenoiser.shared(it) }
             val mergedRaw: IxMerged = mergeBest(gl, frames, planes, ref, black, params, classicalDenoise = tpu == null, ready = ready)
             val merged: IxMerged = if (tpu == null) mergedRaw else try {
                 val t = System.nanoTime()

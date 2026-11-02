@@ -15,8 +15,11 @@ import com.everettpenne.ix.IxShadingMap
  */
 object BurstRender {
     /** The finishing look, tuned against the Pixel camera app's output of the same scenes (docs/ix-pipeline.md). */
-    val LOOK = com.everettpenne.ix.IxLook(blackPoint = 0.04f, contrast = 0.4f, saturation = 0.9f, sharpen = 1.8f, sharpenCore = 1.5f,
-        denoise = 0.45f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f, localTone = 0.35f, grain = 1.2f,
+    val LOOK = com.everettpenne.ix.IxLook(blackPoint = 0.04f, contrast = 0.4f, saturation = 0.9f, sharpen = 1.8f, sharpenCore = 1.5f, hueChroma = 1f,
+        // Noise filtering is off for now (Everett, 2026-11-02): the classical finish (denoise > 0) and the learned TPU denoiser (BurstProcessor, switch "tpu") left
+        // blocky posterised patches and colour blobs on clean mid and dark areas; with both off those scenes are clean. The finish also carries detail, clarity and
+        // grain, so those are inactive too; denoise=0.45 as a debug switch brings it back.
+        denoise = 0f, detail = 4.5f, detailCore = 0.5f, clarity = 0.4f, chromaSmoothing = 0.85f, localTone = 0.35f, grain = 1.2f,
         autoTone = 1f,
         // used only if the adaptive tone cannot run on a device: the curve fitted to the Pixel app's picture of the first scene (a dim room)
         curve = floatArrayOf(0f, 4f, 13f, 34f, 55f, 75f, 106f, 132f, 156f, 180f, 203f, 245f).map { it / 255f }.toFloatArray())
@@ -79,7 +82,7 @@ object BurstRender {
             sharpen = l.sharpen * (1f + 0.6f * x), sharpenCore = l.sharpenCore, curve = l.curve,
             denoise = l.denoise, detail = l.detail * (1f + x), detailCore = l.detailCore, clarity = l.clarity * (1f + x), chromaSmoothing = l.chromaSmoothing,
             localTone = l.localTone, grain = (t.grain + t.preset.grain * i + ts.grain * ta).coerceIn(0f, 1f) * LookTuning.GRAIN_LEVELS, autoTone = if (t.manualExposure) 0f else l.autoTone,
-            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows * i + ts.shadows * ta) / 20f).coerceIn(-1f, 1f))
+            exposureEv = t.exposureEv, shadows = ((t.shadows + t.preset.shadows * i + ts.shadows * ta) / 20f).coerceIn(-1f, 1f), hueChroma = l.hueChroma)
     }
 
     /** [LOOK] with the user's [tuning], and any stages the debug switches turned off. */
@@ -89,7 +92,7 @@ object BurstRender {
         return com.everettpenne.ix.IxLook(l.blackPoint, l.contrast, l.saturation, l.sharpen, l.sharpenCore, l.curve,
             denoise = if (DebugFlags.on("nofinish")) 0f else DebugFlags.value("denoise", l.denoise), detail = DebugFlags.value("detail", l.detail), detailCore = DebugFlags.value("core", l.detailCore), clarity = DebugFlags.value("clarity", l.clarity), chromaSmoothing = DebugFlags.value("chroma", l.chromaSmoothing),
             localTone = if (DebugFlags.on("noltm")) 0f else l.localTone, grain = if (DebugFlags.on("nograin")) 0f else l.grain, autoTone = if (DebugFlags.on("noauto")) 0f else l.autoTone,
-            exposureEv = l.exposureEv, shadows = l.shadows)
+            exposureEv = l.exposureEv, shadows = l.shadows, hueChroma = l.hueChroma)
     }
 
     /** The brightness gain for a hand-set exposure: what automatic exposure's pictures needed on average (x3.1 to x3.5 in the logs), so a picture taken at the exposure the camera would have chosen looks as usual and one stop more or less looks a stop brighter or darker. */

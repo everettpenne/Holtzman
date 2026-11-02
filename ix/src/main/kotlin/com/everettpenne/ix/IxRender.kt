@@ -66,11 +66,32 @@ public class IxLook(
     public val exposureEv: Float = 0f,
     /** -1..1, 0 = none (adaptive tone only): darkens or lifts the shadows without moving the highlights, see [IxAutoTone.shadows]. */
     public val shadows: Float = 0f,
+    /** 0 = off, 1 = full: colour is scaled by hue (see [HUE_CHROMA]), toward the Pixel camera app's calmer oranges, yellows and greens. */
+    public val hueChroma: Float = 0f,
 ) {
     init { require(curve == null || curve.size == CURVE_X.size) { "the curve needs ${CURVE_X.size} points" } }
 
     public companion object {
         public val NEUTRAL: IxLook = IxLook()
+        /**
+         * Chroma multiplier at hue angles 0, 30, ... 330 degrees (the angle of Cr over Cb of the BT.709 display colour: blue 355, magenta 50, red 103, orange and
+         * skin about 125, yellow 175, green 230, cyan 283), linear between. From the 52 registered Pixel pairs (docs/colour-fit.md): in flat areas the Pixel
+         * app's chroma is about 0.7x ours overall, 0.6x in orange, yellow and yellow-green (skin reads red and harsh in ours, paler and peach in the Pixel's),
+         * 0.7-0.8x in violet and magenta, 1.0x in blue. The look's own saturation of 0.9 is part of that, so these are the multipliers still needed.
+         */
+        public val HUE_CHROMA: FloatArray = floatArrayOf(1.0f, 0.88f, 0.8f, 0.78f, 0.66f, 0.62f, 0.62f, 0.68f, 0.76f, 0.9f, 0.97f, 1.0f)
+        /** The chroma multiplier for display colour [rgb] at [strength] (0..1): 1 near black and white, where colour is not judged. */
+        public fun hueScale(r: Float, g: Float, b: Float, strength: Float): Float {
+            val y = 0.2126f * r + 0.7152f * g + 0.0722f * b
+            val cb = (b - y) / 1.8556f; val cr = (r - y) / 1.5748f
+            if (cb * cb + cr * cr < 1e-8f) return 1f
+            var deg = Math.toDegrees(Math.atan2(cr.toDouble(), cb.toDouble())).toFloat(); if (deg < 0f) deg += 360f
+            val t = deg / 30f; val i = t.toInt() % 12; val f = t - t.toInt()
+            val table = HUE_CHROMA[i] + (HUE_CHROMA[(i + 1) % 12] - HUE_CHROMA[i]) * f
+            val lo = ((y - 0.04f) / 0.11f).coerceIn(0f, 1f); val hi = ((y - 0.85f) / 0.13f).coerceIn(0f, 1f)
+            val w = lo * lo * (3f - 2f * lo) * (1f - hi * hi * (3f - 2f * hi))
+            return 1f + (table - 1f) * strength * w
+        }
         /** Where the tone curve is sampled, in display values of 255. */
         public val CURVE_X: FloatArray = floatArrayOf(0f, 8f, 16f, 32f, 48f, 64f, 96f, 128f, 160f, 192f, 224f, 255f).map { it / 255f }.toFloatArray()
     }
@@ -90,7 +111,12 @@ public class IxLook(
             rgb[i] = c
         }
         val l = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2]
-        for (i in 0..2) rgb[i] = curved((l + (rgb[i] - l) * saturation).coerceIn(0f, 1f))
+        for (i in 0..2) rgb[i] = (l + (rgb[i] - l) * saturation).coerceIn(0f, 1f)
+        if (hueChroma > 0f) {
+            val s = hueScale(rgb[0], rgb[1], rgb[2], hueChroma); val y = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2]
+            for (i in 0..2) rgb[i] = (y + (rgb[i] - y) * s).coerceIn(0f, 1f)
+        }
+        for (i in 0..2) rgb[i] = curved(rgb[i])
     }
 }
 

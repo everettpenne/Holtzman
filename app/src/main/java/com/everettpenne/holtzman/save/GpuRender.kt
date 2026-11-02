@@ -140,6 +140,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             GLES31.glUniform1f(gl.loc(toneProgram, "blackPoint"), s.look.blackPoint)
             GLES31.glUniform1f(gl.loc(toneProgram, "contrast"), s.look.contrast)
             GLES31.glUniform1f(gl.loc(toneProgram, "saturation"), s.look.saturation)
+            GLES31.glUniform1f(gl.loc(toneProgram, "hueChroma"), if (DebugFlags.on("nohue")) 0f else s.look.hueChroma)
+            GLES31.glUniform1fv(gl.loc(toneProgram, "hueK[0]"), 12, com.everettpenne.ix.IxLook.HUE_CHROMA, 0)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveX[0]"), 12, com.everettpenne.ix.IxLook.CURVE_X, 0)
             GLES31.glUniform1fv(gl.loc(toneProgram, "curveY[0]"), 12, s.look.curve ?: com.everettpenne.ix.IxLook.CURVE_X, 0)
             val useAutoTone = s.look.autoTone > 0f && autoToneAvailable
@@ -625,7 +627,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 9) readonly buffer Base { float base[]; };
             uniform ivec2 size; uniform ivec2 redAt; uniform vec3 wb; uniform mat3 ccm; uniform float exposure;
             uniform float blackPoint; uniform float contrast; uniform float saturation; uniform float curveX[12]; uniform float curveY[12]; uniform int hasCurve;
-            uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm; uniform int useClipRule;
+            uniform float hueChroma; uniform float hueK[12]; uniform float ltmC; uniform float ltmMid; uniform ivec2 grid; uniform int hasLtm; uniform int useClipRule;
             const float EPS = 0.02;
             $CHANNEL
             float at(int x, int y) { return lin[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)]; }
@@ -644,6 +646,19 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 c += contrast * (c * c * (3.0 - 2.0 * c) - c);
                 float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
                 c = clamp(vec3(l) + (c - vec3(l)) * saturation, 0.0, 1.0);
+                if (hueChroma > 0.0) {
+                    // chroma by hue, as IxLook.hueScale: the Pixel app's oranges, yellows and greens are calmer than ours (docs/colour-fit.md)
+                    float y = dot(c, vec3(0.2126, 0.7152, 0.0722)); float cb = (c.b - y) / 1.8556; float cr = (c.r - y) / 1.5748;
+                    if (cb * cb + cr * cr > 1e-8) {
+                        float deg = degrees(atan(cr, cb)); if (deg < 0.0) deg += 360.0;
+                        float t = deg / 30.0; int i = int(t) % 12; float f = t - floor(t);
+                        float table = mix(hueK[i], hueK[(i + 1) % 12], f);
+                        float lo = clamp((y - 0.04) / 0.11, 0.0, 1.0); float hi = clamp((y - 0.85) / 0.13, 0.0, 1.0);
+                        float w = lo * lo * (3.0 - 2.0 * lo) * (1.0 - hi * hi * (3.0 - 2.0 * hi));
+                        float sc = 1.0 + (table - 1.0) * hueChroma * w;
+                        c = clamp(vec3(y) + (c - vec3(y)) * sc, 0.0, 1.0);
+                    }
+                }
                 return vec3(curved(c.r), curved(c.g), curved(c.b));
             }
             uint byteOf(float x) { return uint(x * 255.0 + 0.5); }
