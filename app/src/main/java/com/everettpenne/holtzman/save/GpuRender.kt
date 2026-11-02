@@ -238,6 +238,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 GLES31.glUniform1f(gl.loc(finishProgram, "core"), s.look.detailCore)
                 GLES31.glUniform1f(gl.loc(finishProgram, "clarity"), s.look.clarity)
                 GLES31.glUniform1f(gl.loc(finishProgram, "chromaMix"), s.look.chromaSmoothing)
+                GLES31.glUniform1f(gl.loc(finishProgram, "chromaWide"), DebugFlags.value("wide", CHROMA_WIDE))
                 GLES31.glUniform1f(gl.loc(finishProgram, "grain"), s.look.grain)
                 GLES31.glDispatchCompute(gx, gy, 1)
                 GLES31.glMemoryBarrier(GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
@@ -280,6 +281,8 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
     private companion object {
         /** Logs how long each pass takes (stalls the pipeline to do it, so only for measuring). */
         const val PROFILE = false
+        /** Strength (0..1) of the finish's wide, edge-aware colour smoothing; the debug switch wide=0 turns it off for a shot. */
+        const val CHROMA_WIDE = 0.85f
         /** The scene key (linear) the local tone mapping compresses about: what the exposure brings an average picture to. */
         const val LTM_KEY = 0.12f
         /** The channel at (x, y): 0 red, 1 green, 2 blue, from where red sits in the 2x2 cell. Same rule as IxCfa.channelAt. */
@@ -496,7 +499,7 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
             layout(std430, binding = 3) readonly buffer In { uint src[]; };
             layout(std430, binding = 4) writeonly buffer Out { uint dst[]; };
             layout(std430, binding = 5) readonly buffer Luma { float luma3[]; };
-            uniform ivec2 size; uniform vec3 sigmas; uniform float denoise; uniform float detail; uniform float core; uniform float clarity; uniform float chromaMix; uniform float grain;
+            uniform ivec2 size; uniform vec3 sigmas; uniform float denoise; uniform float detail; uniform float core; uniform float clarity; uniform float chromaMix; uniform float chromaWide; uniform float grain;
             vec3 px(int x, int y) {
                 uint v = src[clamp(y, 0, size.y - 1) * size.x + clamp(x, 0, size.x - 1)];
                 return vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)) / 255.0;
@@ -540,6 +543,23 @@ class GpuRender(private val gl: GlContext = GlContext(), private val ownsContext
                 }
                 float lD = numL / den;
                 vec3 chroma = (c - vec3(l)) * (1.0 - chromaMix) + (numC / den) * chromaMix;
+                // Wide colour smoothing. Root cause of the blotchy shadows and mid-tones left after the sub-count and quantisation fixes: the merged frame's
+                // colour noise is low-frequency (patches of 20-60 px, brown against green on a grey panel; present with the finish, local tone and adaptive
+                // tone each switched off, so it comes from the merge and demosaic), far beyond the 7x7 reach above. Real colour does not change inside a
+                // surface, so colour is averaged over a sparse 9x9 grid at a stride of 8 pixels (reach 32), counting only neighbours of similar brightness
+                // and similar colour: a patch is within a few hundredths of its surroundings, a real colour edge (blue handle on wood) is a few tenths away
+                // and stays out. Strongest in the shadows and mid-tones where the noise is, fading out in the highlights.
+                if (chromaWide > 0.0) {
+                    float wsum = 0.0; vec3 wnum = vec3(0.0);
+                    for (int j = -4; j <= 4; j++) for (int i = -4; i <= 4; i++) {
+                        vec3 q = px(p.x + i * 8, p.y + j * 8); float lq = luma(q); vec3 cq = q - vec3(lq);
+                        vec3 dc = cq - chroma;
+                        float w = exp(-(lq - l) * (lq - l) / (2.0 * 0.07 * 0.07) - dot(dc, dc) / (2.0 * 0.045 * 0.045));
+                        wsum += w; wnum += w * cq;
+                    }
+                    float amt = chromaWide * (1.0 - 0.7 * smoothstep(0.45, 0.85, m));
+                    chroma = mix(chroma, wnum / wsum, amt);
+                }
                 // the wide blur for local contrast: a sparse 5x5 over the 3x3-smoothed luma, weights of a Gaussian of about 3 pixels
                 float g4 = 0.0; float g4w = 0.0;
                 for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
