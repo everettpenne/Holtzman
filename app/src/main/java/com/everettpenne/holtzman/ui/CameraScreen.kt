@@ -547,7 +547,8 @@ private fun CameraScreen(startInVideo: Boolean, locked: Boolean, onCaptured: ((a
                 val w = maxWidth; val stageH = w / ratio; val pictureH = w * pictureHW
                 val coverW = maxOf(w, pictureH * ratio); val coverH = coverW / ratio   // the buffer scaled to cover the picture
                 val visibleX = w / coverW; val visibleY = pictureH / coverH             // the part of the buffer the picture shows
-                var tourSeen by remember { mutableStateOf(prefs.getBoolean("tourSeen", false)) }
+                // No first-run tip on the lock screen: it covered the subject brackets there, and a stranger's tap would have closed the owner's tip for good.
+                var tourSeen by remember { mutableStateOf(locked || prefs.getBoolean("tourSeen", false)) }
                 val tracked by rememberSubjectTracking(previewView, controller, subjectFocus && !videoMode && nightExtension == null && focusT == null && resumed, visible = { visibleX to visibleY }) { deviceDegrees }
                 val roll by rememberRollDegrees(levelOn && !videoMode)
                 val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
