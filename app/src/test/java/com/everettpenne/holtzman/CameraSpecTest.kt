@@ -3,6 +3,7 @@ package com.everettpenne.holtzman
 import com.everettpenne.holtzman.camera.*
 import org.junit.Assert.*
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class CameraSpecTest {
@@ -166,5 +167,11 @@ class CameraSpecTest {
         assertArrayEquals(intArrayOf(1000, 750, 2000, 1500), zoomWindow(4000, 3000, 2f))
         val r = zoomWindow(4000, 3000, 2.7f)
         assertArrayEquals(intArrayOf(1260, 944, 1480, 1110), r)
+    }
+
+    @Test fun aZoomedPhotoSaysSoInItsStatus() {
+        assertEquals("", zoomNote(1f))
+        assertEquals("  ·  ultrawide, no merge", zoomNote(0.556f))
+        assertEquals("  ·  4.0× crop", zoomNote(4f))
     }
 }

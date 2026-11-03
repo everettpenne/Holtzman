@@ -139,6 +139,13 @@ fun zoomWindow(width: Int, height: Int, zoom: Float): IntArray {
     return intArrayOf(((width - w) / 2) and 1.inv(), ((height - h) / 2) and 1.inv(), w, h)
 }
 
+/** What to add to "Saved" when the photo was taken zoomed: below 1x it is the camera's own JPEG (no merge), above 1x it is a crop of the sensor's own pixels (no Ultra HDR). */
+fun zoomNote(zoom: Float): String = when {
+    zoom < 0.99f -> "  ·  ultrawide, no merge"
+    zoom > 1.01f -> "  ·  %.1f× crop".format(java.util.Locale.ROOT, zoom)
+    else -> ""
+}
+
 /** A zoom ratio kept inside what the camera offers. */
 fun clampZoom(ratio: Float, min: Float, max: Float): Float = if (ratio.isNaN()) min.coerceAtLeast(1f).coerceAtMost(max) else ratio.coerceIn(min, max)
 

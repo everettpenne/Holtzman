@@ -41,6 +41,9 @@ fun SettingsSheet(
     var compare by remember { mutableStateOf(prefs.getBoolean("compare", false)) }
     var keep by remember { mutableStateOf(prefs.getBoolean("keepRaw", false)) }
     var tpu by remember { mutableStateOf<Boolean?>(null) }
+    // the tuning tools and switches for finding out why a picture came out oddly are hidden until the version is tapped seven times (and stay shown, until tapped seven times again)
+    var developer by remember { mutableStateOf(prefs.getBoolean("developer", false)) }
+    var taps by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { tpu = withContext(Dispatchers.Default) { TpuDenoiser.shared(context) != null } }
     GlassSheet(onDismiss) {
         Column(Modifier.heightIn(max = 640.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
@@ -76,14 +79,14 @@ fun SettingsSheet(
                     trailing = { Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
             }
 
-            GlassSectionHeader("Tools")
-            GlassGroup {
+            if (developer) GlassSectionHeader("Developer: tools")
+            if (developer) GlassGroup {
                 GlassListRow("Dataset capture", subtitle = if (datasetOn) "On  ·  $datasetKind  ·  $datasetSaved saved" else "Save RAW frames for tuning the camera", onClick = onDataset,
                     trailing = { Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
             }
 
-            GlassSectionHeader("Advanced")
-            GlassGroup {
+            if (developer) GlassSectionHeader("Developer: advanced")
+            if (developer) GlassGroup {
                 SwitchRow("Keep the raw burst", "With every photo; about 140 MB each", keep) { keep = it; prefs.edit().putBoolean("keepRaw", it).apply() }
                 GlassRowDivider()
                 SwitchRow("Also save the unmerged frame", "To judge what the merge did", compare) { compare = it; prefs.edit().putBoolean("compare", it).apply() }
@@ -95,11 +98,19 @@ fun SettingsSheet(
 
             GlassSectionHeader("About")
             GlassGroup {
-                GlassListRow("Version", trailing = { Value(com.everettpenne.holtzman.BuildConfig.VERSION_NAME) })
+                GlassListRow("Version", subtitle = if (developer) "Developer options are shown (tap seven times to hide)" else null,
+                    onClick = { taps++; if (taps >= 7) { taps = 0; developer = !developer; prefs.edit().putBoolean("developer", developer).apply() } },
+                    trailing = { Value(com.everettpenne.holtzman.BuildConfig.VERSION_NAME) })
                 GlassRowDivider()
                 GlassListRow("Denoiser", trailing = { Value(when (tpu) { true -> "Learned, on the TPU"; false -> "Classical"; null -> "…" }) })
                 GlassRowDivider()
                 GlassListRow("Camera", trailing = { Value(android.os.Build.MODEL) })
+                GlassRowDivider()
+                GlassListRow("Subject recognition", subtitle = "DeepLab v3 (MediaPipe), Apache-2.0; runs on this phone", trailing = { Value("On-device") })
+                GlassRowDivider()
+                GlassListRow("Depth", subtitle = "MiDaS v2.1 small (isl-org), MIT; runs on this phone", trailing = { Value("On-device") })
+                GlassRowDivider()
+                GlassListRow("Network", subtitle = "The app asks for no network permission; nothing leaves the phone", trailing = { Value("None") })
             }
         }
     }

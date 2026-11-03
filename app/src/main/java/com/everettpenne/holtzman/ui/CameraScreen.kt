@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -147,7 +148,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(longCapture) { prefs.edit().putBoolean("longCapture", longCapture).apply() }
     var levelOn by remember { mutableStateOf(prefs.getBoolean("level", false)) }
     // the pro readout (ISO, shutter, compensation, focus, live) over the viewfinder, and subject-aware autofocus; both on unless turned off
-    var proReadout by remember { mutableStateOf(prefs.getBoolean("proReadout", true)) }
+    var proReadout by remember { mutableStateOf(prefs.getBoolean("proReadout", false)) }
     var subjectFocus by remember { mutableStateOf(prefs.getBoolean("subjectFocus", true)) }
     LaunchedEffect(proReadout, subjectFocus) { prefs.edit().putBoolean("proReadout", proReadout).putBoolean("subjectFocus", subjectFocus).apply() }
     // AE/AF lock (a long press on the picture): focus and exposure held until the next tap
@@ -227,12 +228,15 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // Below 1x the camera is opened without a RAW stream: with one it stays on the main lens (the .6 view was the 1x view, 2026-11-02), so the ultrawide needs the plain session.
     // The shot there is the camera's own JPEG. Crossing 1x reopens the camera at the zoom it had.
     val wide = zoom < 0.99f && !dataset && !videoMode
+    var veil by remember { mutableStateOf(false) }
+    var lastWide by remember { mutableStateOf(false) }
     LaunchedEffect(previewSurface, lens, raw, hdr, computational, dataset, resumed, previewShape, nightExtension, videoMode, quality, instant, longCapture, wide) {
+        if (wide != lastWide) { veil = true; lastWide = wide }
         val surface = previewSurface
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
         previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
-        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { veil = false; rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -257,11 +261,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // load the TPU denoiser now, off the main thread, so the first photo does not wait for it
     // (only when it is switched on: noise filtering is off by default since 2026-11-02, and loading it took the TPU and memory at every start for nothing)
     LaunchedEffect(Unit) { if (com.everettpenne.holtzman.save.DebugFlags.on("tpu")) withContext(Dispatchers.Default) { com.everettpenne.holtzman.ml.TpuDenoiser.shared(context) } }
-    LaunchedEffect(status) { if (status != null) { delay(if (status!!.startsWith("Saved scene") || status!!.contains("Dataset")) 8000 else 3500); status = null } }
+        // a failure stays up longer than a confirmation: it is the one thing that is easy to miss and costs a photo
+    LaunchedEffect(status) { if (status != null) { val t = status!!; delay(if (t.startsWith("Saved scene") || t.contains("Dataset")) 8000 else if (t.contains("fail", true) || t.startsWith("Couldn't") || t.startsWith("Could not")) 7000 else 3500); status = null } }
+    // the shutter's flash (a quick dip to black over the picture), and the veil while the camera reopens (crossing 1x switches lens session); both drawn without recomposing the screen
+    var flashTick by remember { mutableStateOf(0) }
+    val shutterDip = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(flashTick) { if (flashTick > 0) { shutterDip.snapTo(.8f); shutterDip.animateTo(0f, androidx.compose.animation.core.tween(220)) } }
+    val veilAlpha by androidx.compose.animation.core.animateFloatAsState(if (veil) 1f else 0f, androidx.compose.animation.core.tween(if (veil) 120 else 260), label = "veil")
+    LaunchedEffect(veil) { if (veil) { delay(2500); veil = false } }   // never stuck dark if the camera does not report back
 
     fun shootBurst() {
         if (shutterBusy) return
-        busy = true; status = "Hold still…"
+        busy = true; status = "Hold still…"; flashTick++
         val tTap = android.os.SystemClock.elapsedRealtime()   // the shot's clock: every stage below logs its offset from the tap (tag HoltzmanTiming)
         fun stamp(what: String) = android.util.Log.i("HoltzmanTiming", "%5d ms  %s".format(android.os.SystemClock.elapsedRealtime() - tTap, what))
         stamp("tap")
@@ -291,7 +302,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 stamp("processed and saved")
                 withContext(Dispatchers.Main) {
                     pending--
-                    outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = if (it.dng != null) "Saved JPEG + DNG" else "Saved" }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
+                    outcome.onSuccess { last = Saved(it.jpeg, it.dng); onCaptured?.invoke(it.jpeg, "image/jpeg"); status = (if (it.dng != null) "Saved JPEG + DNG" else "Saved") + zoomNote(shotZoom) }.onFailure { status = "Burst failed: ${it.message}"; android.util.Log.w("HoltzmanBurst", it) }
                 }
             }
         }
@@ -399,7 +410,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         // showing the 1x view), so a zoomed-out shot is the camera's own JPEG, which does follow the zoom
         if (computational && controller.rawAvailable && controller.zoom >= 0.99f) { shootBurst(); return }
         if (pending > 0) return
-        busy = true
+        busy = true; flashTick++
         if (night) status = "Hold still…"
         controller.capture(deviceDegrees, highQuality, if (night) FlashMode.OFF else flash, onResult = { still ->
             // the heavy part (writing the files) leaves the camera thread, so the next preview frame is never held up by storage
@@ -410,7 +421,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw && !night) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" } }.onFailure { status = "Couldn't save: ${it.message}" }
+                    saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" }; if (zoom < 0.99f || zoom > 1.01f) status = status + zoomNote(zoom) }.onFailure { status = "Couldn't save: ${it.message}" }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
@@ -517,11 +528,23 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     } },
                     modifier = Modifier.matchParentSize(),
                 )
+                Box(Modifier.matchParentSize().graphicsLayer { alpha = maxOf(shutterDip.value, veilAlpha) }.background(Color.Black))
+                // the first time: what the touches do, once, and away at a tap (nothing else in the picture says that a long press locks, or that the numbers slide)
+                var tourSeen by remember { mutableStateOf(prefs.getBoolean("tourSeen", false)) }
+                if (!tourSeen && !videoMode) Column(Modifier.align(Alignment.Center).padding(horizontal = 28.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xE61C1C1E))
+                    .clickable { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply() }.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Using the camera", style = IosType.headline, color = Color.White)
+                    listOf("Tap the picture to focus; drag up or down for exposure", "Press and hold to lock focus and exposure", "Pinch, or slide along the zoom numbers, to zoom", "Swipe sideways for video; the six dots open the controls").forEach {
+                        Text(it, style = IosType.subheadline, color = Color.White.copy(alpha = .85f))
+                    }
+                    Text("Tap to close", style = IosType.footnote, color = CameraYellow)
+                }
                 // Touch on the picture: tap to focus (and meter) there, then drag up or down for exposure (the sun beside the focus square), pinch to zoom,
                 // swipe a long way sideways to change mode.
                 Box(Modifier.matchParentSize()
                     .pointerInput(Unit) { detectTapGestures(
-                        onTap = { p -> if (aeAfLock) { aeAfLock = false; controller.unlock() }; focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) },
+                        onTap = { p -> if (!tourSeen) { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply(); return@detectTapGestures }   // the first tap only closes the tip
+                            if (aeAfLock) { aeAfLock = false; controller.unlock() }; focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) },
                         onLongPress = { p -> if (focusT == null && nightExtension == null && !videoMode) { focusPoint = p; focusTick++; aeAfLock = true; controller.lockAt(p.x / size.width, p.y / size.height); hostView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } }) }
                     .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }
                     .pointerInput(videoMode, recording) { var total = 0f; detectHorizontalDragGestures(onDragStart = { total = 0f }, onDragEnd = { if (!recording) { if (total > 160f && videoMode) { videoMode = false } else if (total < -160f && !videoMode) { videoMode = true; night = false } } }) { _, dx -> total += dx } }
@@ -573,11 +596,14 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
                 if (activeItem == null && !showControls) run {   // the zoom numbers make way for an open card (whose shutter floats where they are) and for the controls sheet
                     val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
-                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // sliding along the numbers zooms continuously (a zoom dial of sorts), as a pinch does; a tap on a number goes straight to it
+                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp)
+                        .pointerInput(Unit) { detectHorizontalDragGestures { change, dx -> change.consume(); zoom = controller.setZoom(controller.zoom * kotlin.math.exp(dx / 260f)) } },
+                        horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
                         stops.forEach { stop ->
                             val on = kotlin.math.abs(zoom - stop) < 0.05f
                             val num = if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}"
-                            Box(Modifier.size(if (on) 38.dp else 34.dp).clip(CircleShape).background(if (on) Color.Black.copy(alpha = .5f) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(48.dp).padding(if (on) 5.dp else 7.dp).clip(CircleShape).background(if (on) Color.Black.copy(alpha = .5f) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }.semantics { contentDescription = "Zoom $num times" + if (on) ", selected" else "" }, contentAlignment = Alignment.Center) {
                                 Text(if (on) "$num×" else num, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = if (on) CameraYellow else Color.White)
                             }
                         }
@@ -616,6 +642,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                         val thumb = lastThumb
                         if (thumb != null) androidx.compose.foundation.Image(thumb.asImageBitmap(), "Last photo", Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                         else Icon(Icons.Rounded.PhotoLibrary, "Last photo", tint = Color.White.copy(alpha = .8f))
+                        // a photo is being taken or still being processed: the thumbnail dims and spins until it is saved, so there is always a sign the shot was not lost
+                        if (!videoMode && (pending > 0 || busy)) Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = .5f)), contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), color = CameraYellow, strokeWidth = 2.dp)
+                        }
                     }
                     if (!recording) ModeCapsule(videoMode, true, { v -> videoMode = v; if (v) night = false }) else Spacer(Modifier.size(1.dp))
                     Box(Modifier.size(46.dp).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = .13f)).clickable { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK }.semantics { contentDescription = "Switch camera" },
@@ -663,7 +693,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .4f)).clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = false })
             ControlsSheet(sheetItems, lit, changed, { i ->
                 when (i) {
-                    StripItem.NIGHT -> night = !night; StripItem.HDR -> hdr = !hdr; StripItem.RAW -> raw = !raw
+                    StripItem.NIGHT -> night = !night
+                    StripItem.HDR -> if (zoom < 0.99f || zoom > 1.01f) status = "Ultra HDR needs 1×" else hdr = !hdr
+                    StripItem.RAW -> if (zoom < 0.99f) status = "RAW is not available below 1×" else raw = !raw
                     StripItem.SETTINGS -> { showControls = false; showSettings = true }
                     else -> { showControls = false; startStylesOnTexture = false; activeItem = i }
                 }

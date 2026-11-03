@@ -135,7 +135,7 @@ fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<Strip
                 val shown = members.filter { it in items }
                 if (shown.isEmpty()) return@forEach
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(title.uppercase(), style = IosType.caption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .45f), modifier = Modifier.padding(start = 6.dp))
+                    Text(title.uppercase(), style = IosType.caption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .62f), modifier = Modifier.padding(start = 6.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         shown.forEach { item ->
                             Column(Modifier.width(78.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -143,7 +143,7 @@ fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<Strip
                                     tile(item, item in on)
                                     if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(10.dp).size(8.dp).background(CameraYellow, CircleShape))
                                 }
-                                Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.4.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .75f))
+                                Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.4.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .85f))
                             }
                         }
                         repeat(4 - shown.size) { Spacer(Modifier.width(78.dp)) }
