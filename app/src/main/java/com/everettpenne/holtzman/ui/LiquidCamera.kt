@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,11 +31,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import com.everettpenne.glass.GlassCircleButton
-import com.everettpenne.glass.frostedGlass
-import com.everettpenne.glass.glassSurface
+import com.everettpenne.glass.LocalGlassBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.shadow.Shadow
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -56,6 +61,8 @@ val LocalLiquid = compositionLocalOf { false }
 class PreviewGlass(val backdrop: LayerBackdrop) {
     var rect by mutableStateOf(Rect.Zero)
     var shown by mutableStateOf<ImageBitmap?>(null)
+    /** The same picture reduced to a few colour patches: the soft wash behind the bars, in which no scene can be made out. */
+    var wash by mutableStateOf<ImageBitmap?>(null)
 }
 
 @Composable
@@ -68,7 +75,12 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
         val images = bitmaps.map { it.asImageBitmap() }
         var next = 0
         while (isActive) {
-            if (view.isAvailable && runCatching { view.getBitmap(bitmaps[next]) }.isSuccess) { glass.shown = images[next]; next = 1 - next }
+            if (view.isAvailable && runCatching { view.getBitmap(bitmaps[next]) }.isSuccess) {
+                glass.shown = images[next]; next = 1 - next
+                // two halvings-and-more with filtering, so each patch is an average of its area, not a sample of it
+                val mid = Bitmap.createScaledBitmap(bitmaps[1 - next], 24, 32, true)
+                glass.wash = Bitmap.createScaledBitmap(mid, 6, 8, true).asImageBitmap(); mid.recycle()
+            }
             delay(100)
         }
     }
@@ -81,33 +93,48 @@ fun PreviewBackdropLayer(glass: PreviewGlass, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().layerBackdrop(glass.backdrop).drawBehind {
         drawRect(Color.Black)
         val image = glass.shown; val r = glass.rect
-        // iOS 26: the area behind the controls is more transparent, so more of the frame shows past the picture. The bars around the picture get the live frame, filled to the
-        // screen, as a soft dim glow (it is a 96 x 128 copy stretched ~20x, so it is a blur already), which also gives the glass there something to bend.
-        if (image != null) {
-            val k = maxOf(size.width / image.width, size.height / image.height)
-            val dw = image.width * k; val dh = image.height * k
-            drawImage(image, dstOffset = IntOffset(((size.width - dw) / 2f).roundToInt(), ((size.height - dh) / 2f).roundToInt()), dstSize = IntSize(dw.roundToInt(), dh.roundToInt()), alpha = .42f, filterQuality = FilterQuality.Medium)
-        }
+        // iOS 26: the area behind the controls is more transparent, so something shows past the picture. The bars around it get the frame as a smooth wash of colour
+        // (6 x 8 patches stretched with filtering), not the frame itself: stretched to the screen the frame was a recognisable, zoomed-in picture that looked wrong in the bars.
+        val wash = glass.wash
+        if (wash != null) drawImage(wash, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()), alpha = .6f, filterQuality = FilterQuality.High)
         if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
     })
+}
+
+/**
+ * The camera's glass without the rim light the kit puts on its edges (and without the colour fringe of its lens): the edge bends the picture and nothing more. Built
+ * here on the Backdrop library so the shared kit stays as it is.
+ */
+@Composable
+private fun Modifier.plainGlass(shape: Shape, tint: Color, blurRadius: Float, lensHeight: Float, lensAmount: Float, shadowed: Boolean): Modifier {
+    val backdrop = LocalGlassBackdrop.current ?: return this.clip(shape).background(tint)
+    return drawBackdrop(
+        backdrop = backdrop, shape = { shape },
+        effects = { colorControls(brightness = 0f, contrast = 1f, saturation = 1.5f); blur(blurRadius.dp.toPx()); lens(lensHeight.dp.toPx(), lensAmount.dp.toPx()) },
+        highlight = null, shadow = { if (shadowed) Shadow.Default else null }, onDrawSurface = { drawRect(tint) },
+    )
 }
 
 /** Clear glass for a small control or capsule; the flat translucent fill [flat] without glass. */
 @Composable
 fun Modifier.liquid(shape: Shape, flat: Color = Color.Black.copy(alpha = .45f)): Modifier =
-    if (LocalLiquid.current) frostedGlass(shape, lensHeight = 10f, lensAmount = 20f) else clip(shape).background(flat)
+    if (LocalLiquid.current) plainGlass(shape, Color.Black.copy(alpha = .14f), 2f, 10f, 20f, false) else clip(shape).background(flat)
 
 /** Glass for a panel (a card, the sheet, a tip): darker and more frosted than a control, with a soft shadow. */
 @Composable
 fun Modifier.liquidPanel(shape: Shape, flat: Color): Modifier =
-    if (LocalLiquid.current) glassSurface(shape, tint = Color.Black.copy(alpha = .30f), blurRadius = 10f, lensHeight = 20f, lensAmount = 40f, shadowed = true) else clip(shape).background(flat)
+    if (LocalLiquid.current) plainGlass(shape, Color.Black.copy(alpha = .30f), 10f, 20f, 40f, true) else clip(shape).background(flat)
 
 /** A round control: a glass button that swells under the finger, or the flat dark disc. */
 @Composable
 fun CamCircle(size: Dp, description: String, onClick: () -> Unit, lit: Boolean = false, content: @Composable BoxScope.() -> Unit) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val tick = { com.everettpenne.glass.GlassFeel.play(haptic, com.everettpenne.glass.GlassFeel.Cue.TICK); onClick() }
-    if (LocalLiquid.current) GlassCircleButton(tick, size = size, description = description, shadowed = false, content = content)
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val swell by androidx.compose.animation.core.animateFloatAsState(if (pressed) 1.12f else 1f, com.everettpenne.glass.GlassFeel.press(), label = "swell")
+    if (LocalLiquid.current) Box(Modifier.size(size).graphicsLayer { scaleX = swell; scaleY = swell }.plainGlass(CircleShape, Color.White.copy(alpha = .08f), 2f, size.value / 4f, size.value / 2f, false)
+        .clickable(interactionSource = src, indication = null, onClick = tick).semantics { contentDescription = description }, contentAlignment = Alignment.Center, content = content)
     else Box(Modifier.size(size).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = if (lit) .22f else .13f)).clickable(onClick = tick)
         .semantics { contentDescription = description }, contentAlignment = Alignment.Center, content = content)
 }
@@ -118,7 +145,7 @@ fun CamCircle(size: Dp, description: String, onClick: () -> Unit, lit: Boolean =
  */
 @Composable
 fun Modifier.liquidText(shape: Shape, flat: Color = Color.Black.copy(alpha = .45f)): Modifier =
-    if (LocalLiquid.current) glassSurface(shape, tint = Color.Black.copy(alpha = .34f), blurRadius = 8f, lensHeight = 8f, lensAmount = 16f, shadowed = false) else clip(shape).background(flat)
+    if (LocalLiquid.current) plainGlass(shape, Color.Black.copy(alpha = .34f), 8f, 8f, 16f, false) else clip(shape).background(flat)
 
 /**
  * Apple's Reduce Transparency has no Android twin; the nearest settings of a person who wants a calmer, more legible screen are high-contrast text and animations

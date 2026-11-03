@@ -33,7 +33,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import com.everettpenne.glass.GlassCircleButton
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -638,7 +637,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 if (!cardOpen && !videoMode && !manualExposureOn) CamCircle(48.dp, "Exposure", { activeItem = StripItem.EXPOSURE; showControls = false }, lit = evEff != 0f) { Icon(Icons.Rounded.Exposure, null, tint = if (evEff != 0f) CameraYellow else Color.White, modifier = Modifier.size(24.dp)) }
                 else Spacer(Modifier.size(48.dp))
                 // iOS 26 has no bright white ring: a ring of glass around the white disc
-                val shutterRing: Modifier = if (liquid) Modifier.liquid(CircleShape, Color.Transparent).border(1.dp, Color.White.copy(alpha = .35f), CircleShape) else Modifier.border(4.dp, Color.White.copy(alpha = .55f), CircleShape)
+                val shutterRing: Modifier = if (liquid) Modifier.liquid(CircleShape, Color.Transparent) else Modifier.border(4.dp, Color.White.copy(alpha = .55f), CircleShape)
                 // the shutter: a white disc in a grey ring; in video the disc is red, and a small red square while recording. The whole 80 dp is the button.
                 Box(Modifier.size(80.dp).clip(CircleShape).clickable(enabled = !shutterBusy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
                     .then(shutterRing).padding(if (recording) 24.dp else 6.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
@@ -650,7 +649,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 Spacer(Modifier.height(14.dp))
                 val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
+                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
                         (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
                     }, contentAlignment = Alignment.Center) {
                         val thumb = lastThumb
@@ -767,7 +766,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
 /** An icon on the top bar, bare like the iPhone's: white, or yellow when its feature is on. */
 @Composable
 private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, on: Boolean, onClick: () -> Unit) {
-    if (LocalLiquid.current) GlassCircleButton(onClick, size = 40.dp, description = description, shadowed = false) { Icon(icon, null, tint = if (on) CameraYellow else Color.White, modifier = Modifier.size(22.dp)) }
+    if (LocalLiquid.current) CamCircle(40.dp, description, onClick) { Icon(icon, null, tint = if (on) CameraYellow else Color.White, modifier = Modifier.size(22.dp)) }
     else Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Icon(icon, null, tint = if (on) CameraYellow else Color.White, modifier = Modifier.size(24.dp))
     }
