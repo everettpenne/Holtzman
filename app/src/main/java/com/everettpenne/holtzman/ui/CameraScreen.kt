@@ -233,12 +233,11 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     DisposableEffect(Unit) { onDispose { controller.release() } }
     // Below 1x the camera is opened without a RAW stream: with one it stays on the main lens (the .6 view was the 1x view, 2026-11-02), so the ultrawide needs the plain session.
     // The shot there is the camera's own JPEG. Crossing 1x reopens the camera at the zoom it had.
-    // the Liquid Glass experiment: glass controls over the live picture (a setting, so the flat look stays to compare)
+    // the iOS 26 look: round, solid cards over the live picture (a setting, so the flat look stays to compare)
     var liquidSetting by remember { mutableStateOf(prefs.getBoolean("liquidGlass", true)) }
     LaunchedEffect(liquidSetting) { prefs.edit().putBoolean("liquidGlass", liquidSetting).apply() }
     val calmScreen = remember(resumed) { reduceTransparency(context) }   // high-contrast text or animations off: the flat, calmer look whatever the setting says
     val liquid = liquidSetting && !calmScreen
-    val previewGlass = rememberPreviewGlass(previewView, liquid && resumed)
     val wide = zoom < 0.99f && !dataset && !videoMode
     var veil by remember { mutableStateOf(false) }
     var lastWide by remember { mutableStateOf(false) }
@@ -471,9 +470,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var liveExposure by remember { mutableStateOf<Pair<Int, Long>?>(null) }
     var liveFocus by remember { mutableStateOf<Float?>(null) }
     LaunchedEffect(proReadout, resumed) { while (proReadout && resumed) { liveExposure = controller.currentExposure; liveFocus = controller.autoSample?.focusDiopters; delay(250) } }
-    androidx.compose.runtime.CompositionLocalProvider(LocalLiquid provides liquid, com.everettpenne.glass.LocalGlassBackdrop provides (if (liquid) previewGlass.backdrop else null)) {
+    androidx.compose.runtime.CompositionLocalProvider(LocalLiquid provides liquid) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (liquid) PreviewBackdropLayer(previewGlass)
         // The preview's buffer is landscape (the sensor's own); the screen shows it upright, so the box is its shape turned a quarter.
         val ratio = previewShape?.let { it.height.toFloat() / it.width } ?: (3f / 4f)
         val styleChanged = preset != BurstRender.LookPreset.STANDARD || warmthEff != 0f || shadowsEff != 0f || textureStyle != BurstRender.TextureStyle.STANDARD
@@ -547,8 +545,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
                 // ---- the picture
                 val pictureTop = if (pictureHW < 1f / ratio) (stageH - pictureH) / 2 else 0.dp
-                Box(Modifier.offset(y = pictureTop).size(w, pictureH).clip(androidx.compose.ui.graphics.RectangleShape).onGloballyPositioned { previewGlass.visible = androidx.compose.ui.geometry.Rect(it.positionInRoot(), it.size.toSize()) }) {
-                    Box(Modifier.requiredSize(coverW, coverH).align(Alignment.Center).onGloballyPositioned { previewGlass.rect = androidx.compose.ui.geometry.Rect(it.positionInRoot(), it.size.toSize()) }) {   // square-cornered, as the iPhone's
+                Box(Modifier.offset(y = pictureTop).size(w, pictureH).clip(androidx.compose.ui.graphics.RectangleShape)) {
+                    Box(Modifier.requiredSize(coverW, coverH).align(Alignment.Center)) {   // square-cornered, as the iPhone's
                     // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
                     // surface the camera is about to be given.
                     AndroidView(

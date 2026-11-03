@@ -32,3 +32,6 @@ Sources: coverage of the iOS 26 Camera ([MacRumors guide](https://www.macrumors.
 | Tint only for primary or meaningful actions | Unchanged: yellow means on or manual, nothing else is tinted |
 
 Not done: a top-right menu button (the six dots at the bottom stay), swiping up for settings (Apple's coverage does not clearly describe it), concentric-radius audit of every nested shape, and the viewfinder reaching under the controls (the picture is still a letterboxed 4:3).
+
+## 2026-11-03: glass removed, solid cards kept
+The glass was blotchy (a 72 x 96 copy of the viewfinder, stretched and lensed) and jittery (the copy updated in steps, about 8 times a second), and it cost GPU and CPU every frame. A neural accelerator (the TPU) cannot render it: it runs networks, not render effects. So the controls are solid dark cards in the iOS 26 shapes (round buttons that swell under the finger, rounded cards, a sheet that opens out of its button). The viewfinder read-back and the Backdrop sampling are gone. The setting is now "iOS 26 style controls" (on by default; off gives the flat 0.7.1 look).

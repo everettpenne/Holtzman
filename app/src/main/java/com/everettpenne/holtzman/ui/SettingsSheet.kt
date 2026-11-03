@@ -73,7 +73,7 @@ fun SettingsSheet(
 
             GlassSectionHeader("Camera")
             GlassGroup {
-                SwitchRow("Liquid Glass (experiment)", "Frosted, lensing controls over the viewfinder", liquid) { onLiquid(it) }
+                SwitchRow("iOS 26 style controls", "Round solid cards that swell under the finger", liquid) { onLiquid(it) }
                 GlassRowDivider()
                 GlassListRow("Photographic Styles", subtitle = "Style, palette and texture", onClick = onStyles,
                     trailing = { Value(styleName); Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
