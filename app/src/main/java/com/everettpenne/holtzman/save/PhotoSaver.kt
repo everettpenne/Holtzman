@@ -184,4 +184,16 @@ class PhotoSaver(private val resolver: ContentResolver) {
         }
         resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c -> buildList { while (c.moveToNext()) add(android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0))) } } ?: emptyList()
     }.getOrDefault(emptyList())
+
+    /**
+     * Deletes the photo at [uri] and the DNG saved beside it (the same name with .dng), which the gallery would otherwise keep as an orphan. Only the app's own files can be
+     * deleted without asking, which is what these are; false when the media library refused.
+     */
+    fun deletePhoto(uri: Uri): Boolean = runCatching {
+        val name = resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        val gone = resolver.delete(uri, null, null) > 0
+        if (gone && name != null) resolver.delete(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?", arrayOf(Environment.DIRECTORY_PICTURES + "/Holtzman%", name.substringBeforeLast('.') + ".dng"))
+        gone
+    }.onFailure { android.util.Log.w("HoltzmanSave", "could not delete a photo", it) }.getOrDefault(false)
 }

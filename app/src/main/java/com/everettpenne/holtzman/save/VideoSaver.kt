@@ -55,4 +55,7 @@ class VideoSaver(private val resolver: ContentResolver) {
         }
         resolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c -> buildList { while (c.moveToNext()) add(android.content.ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(0))) } } ?: emptyList()
     }.getOrDefault(emptyList())
+
+    /** Deletes the recording at [uri]; false when the media library refused. */
+    fun deleteVideo(uri: Uri): Boolean = runCatching { resolver.delete(uri, null, null) > 0 }.onFailure { android.util.Log.w("HoltzmanSave", "could not delete a video", it) }.getOrDefault(false)
 }

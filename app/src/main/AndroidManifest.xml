@@ -34,6 +34,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode">
             <intent-filter>
@@ -44,6 +46,8 @@
             <intent-filter>
                 <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
                 <action android:name="android.media.action.VIDEO_CAMERA" />
+                <!-- The lock screen's camera button and the double press of the power button, while the phone is locked: the camera opens over the lock screen and shows only what is shot in it. -->
+                <action android:name="android.media.action.STILL_IMAGE_CAMERA_SECURE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

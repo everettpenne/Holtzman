@@ -50,7 +50,7 @@ class Tracked(val box: FloatArray, val isFace: Boolean, val label: String)
  * subject, so focus goes back to faces and the middle of the frame.
  */
 @Composable
-fun rememberSubjectTracking(view: TextureView?, controller: CameraController, enabled: Boolean, deviceDegrees: () -> Int): State<Tracked?> {
+fun rememberSubjectTracking(view: TextureView?, controller: CameraController, enabled: Boolean, visible: () -> Pair<Float, Float> = { 1f to 1f }, deviceDegrees: () -> Int): State<Tracked?> {
     val state = remember { mutableStateOf<Tracked?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(view, enabled) {
@@ -70,7 +70,11 @@ fun rememberSubjectTracking(view: TextureView?, controller: CameraController, en
         var steady: IxSubject.Subject? = null; var lastCandidate: IxSubject.Subject? = null; var streak = 0
         try {
             while (isActive) {
-                val face = controller.faceInPreview()
+                // A ratio narrower than the sensor's cuts the preview, and the subject finder sees the whole sensor frame: what lies outside the picture is not a subject (a person
+                // standing just outside a 1:1 or 16:9 frame took focus from what the photo shows). [visible] is the share of the frame's width and height the picture shows, about its centre.
+                val (vx, vy) = visible()
+                fun inPicture(b: FloatArray) = ((b[0] + b[2]) / 2f - 0.5f).let { kotlin.math.abs(it) <= vx / 2f } && ((b[1] + b[3]) / 2f - 0.5f).let { kotlin.math.abs(it) <= vy / 2f }
+                val face = controller.faceInPreview()?.takeIf { inPicture(it) }
                 if (finder != null && view.isAvailable && runCatching { view.getBitmap(bmp) }.isSuccess) {
                     // The screen is held in portrait, so with the phone turned the preview shows the scene on its side, and the network (trained on upright
                     // pictures) called a black camera case a person. The frame is turned upright for it, and the box turned back.
@@ -94,7 +98,7 @@ fun rememberSubjectTracking(view: TextureView?, controller: CameraController, en
                     steady = IxSubject.steady(steady, candidate, streak)
                     if (steady?.label != before?.label) android.util.Log.i("HoltzmanSubject", "subject (frame turned $turn): ${steady?.name ?: "none"}" + (steady?.let { " %.2f %.2f %.2f %.2f, %.1f%% of the frame".format(java.util.Locale.ROOT, it.left, it.top, it.right, it.bottom, it.cover * 100) } ?: ""))
                 }
-                val s = steady
+                val s = steady?.takeIf { inPicture(floatArrayOf(it.left, it.top, it.right, it.bottom)) }
                 controller.subjectBox = s?.focusBox()
                 state.value = when {
                     face != null -> Tracked(face, true, "face")
