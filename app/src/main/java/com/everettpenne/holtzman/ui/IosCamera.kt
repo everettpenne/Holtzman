@@ -37,7 +37,7 @@ import com.everettpenne.glass.IosType
 /** The dark rounded card the camera's controls open in, over the lower part of the picture. */
 @Composable
 fun CardFrame(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(30.dp)).background(Color(0xFC1C1C1E)).padding(horizontal = 12.dp, vertical = 10.dp), content = content)
+    Column(modifier.fillMaxWidth().padding(horizontal = 8.dp).liquidPanel(RoundedCornerShape(30.dp), Color(0xFC1C1C1E)).padding(horizontal = 12.dp, vertical = 10.dp), content = content)
 }
 
 /** A card's top line: a way back on the left, a title (or anything) in the middle, something optional on the right. */
@@ -128,7 +128,7 @@ private val SHEET_GROUPS = listOf(
  */
 @Composable
 fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<StripItem>, onItem: (StripItem) -> Unit, modifier: Modifier = Modifier, tile: @Composable (StripItem, Boolean) -> Unit) {
-    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(Color(0xFF1C1C1E)).navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 16.dp)) {
+    Column(modifier.fillMaxWidth().liquidPanel(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp), Color(0xFF1C1C1E)).navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 16.dp)) {
         Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 10.dp).size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .35f), CircleShape))
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SHEET_GROUPS.forEach { (title, members) ->
@@ -139,7 +139,7 @@ fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<Strip
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         shown.forEach { item ->
                             Column(Modifier.width(78.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(60.dp).liquid(CircleShape, Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
                                     tile(item, item in on)
                                     if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(10.dp).size(8.dp).background(CameraYellow, CircleShape))
                                 }
@@ -158,7 +158,7 @@ fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<Strip
 @Composable
 fun ModeCapsule(videoMode: Boolean, enabled: Boolean, onMode: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     var drag by remember { mutableStateOf(0f) }
-    Row(modifier.clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = .12f)).padding(3.dp).pointerInput(videoMode, enabled) {
+    Row(modifier.liquid(CircleShape, Color(0x66000000)).padding(3.dp).pointerInput(videoMode, enabled) {
         detectDragGestures(onDragEnd = { if (enabled) { if (drag < -40f && !videoMode) onMode(true) else if (drag > 40f && videoMode) onMode(false) }; drag = 0f }) { _, d -> drag += d.x }
     }, verticalAlignment = Alignment.CenterVertically) {
         listOf(true to "VIDEO", false to "PHOTO").forEach { (v, label) ->

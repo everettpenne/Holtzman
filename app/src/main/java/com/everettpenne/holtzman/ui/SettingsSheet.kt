@@ -29,6 +29,7 @@ import kotlinx.coroutines.withContext
 /** Holtzman's settings: how photos are made, the dataset tool, and (further down, out of the way) what is only for finding out why a picture came out oddly. */
 @Composable
 fun SettingsSheet(
+    liquid: Boolean = false, onLiquid: (Boolean) -> Unit = {},
     computational: Boolean, onComputational: (Boolean) -> Unit,
     hdr: Boolean, onHdr: (Boolean) -> Unit,
     raw: Boolean, onRaw: (Boolean) -> Unit,
@@ -72,6 +73,8 @@ fun SettingsSheet(
 
             GlassSectionHeader("Camera")
             GlassGroup {
+                SwitchRow("Liquid Glass (experiment)", "Frosted, lensing controls over the viewfinder", liquid) { onLiquid(it) }
+                GlassRowDivider()
                 GlassListRow("Photographic Styles", subtitle = "Style, palette and texture", onClick = onStyles,
                     trailing = { Value(styleName); Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) })
                 GlassRowDivider()
