@@ -20,7 +20,7 @@ class CaptureActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         setContent {
             HoltzmanRoot(startInVideo = CaptureContract.wantsVideo(intent), onCaptured = { uri, mime ->
-                setResult(Activity.RESULT_OK, CaptureContract.result(uri, mime))
+                setResult(Activity.RESULT_OK, CaptureContract.deliver(this, intent, uri, mime))
                 finish()
             })
         }

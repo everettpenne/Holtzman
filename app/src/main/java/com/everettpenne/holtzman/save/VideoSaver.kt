@@ -23,12 +23,20 @@ class VideoSaver(private val resolver: ContentResolver) {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Holtzman")
+            put(MediaStore.MediaColumns.DATE_TAKEN, timeMillis)   // the gallery sorts and groups by the moment of the shot, not of the write
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw java.io.IOException("The media library would not make $name.")
         val fd = resolver.openFileDescriptor(uri, "w") ?: run { resolver.delete(uri, null, null); throw java.io.IOException("Could not open $name for writing.") }
         return PendingVideo(uri, fd)
     }
+
+    /** The newest recording the app saved before (the thumbnail beside the shutter in video mode, on opening); null when there are none. Only the app's own files are visible to it. */
+    fun latestVideo(): Uri? = runCatching {
+        resolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?", arrayOf(Environment.DIRECTORY_MOVIES + "/Holtzman%"),
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
+    }.onFailure { android.util.Log.w("HoltzmanSave", "could not find the latest video", it) }.getOrNull()
 
     /** Finishes a recording: shown to other apps when [ok], deleted when not. */
     fun finish(video: PendingVideo, ok: Boolean) {

@@ -265,6 +265,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     LaunchedEffect(lens, videoMode, nightExtension) { if (aeAfLock) { aeAfLock = false; focusPoint = null; controller.unlock() } }
     // the thumbnail beside the shutter: the last photo (or video) taken; on opening, the newest photo the app saved before
     LaunchedEffect(Unit) { if (last == null) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
+    LaunchedEffect(Unit) { if (lastVideo == null) withContext(Dispatchers.IO) { videoSaver.latestVideo() }?.let { if (lastVideo == null) lastVideo = it } }
     LaunchedEffect(last, lastVideo, videoMode) {
         val uri = if (videoMode) lastVideo else last?.jpeg
         lastThumb = if (uri == null) null else withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(160, 160), null) }.getOrNull() }
@@ -666,8 +667,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 Spacer(Modifier.height(14.dp))
                 val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
-                        (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
+                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
+                        (if (videoMode) lastVideo else last?.jpeg)?.let { if (!CaptureContract.view(context, it, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" }
                     }, contentAlignment = Alignment.Center) {
                         val thumb = lastThumb
                         if (thumb != null) androidx.compose.foundation.Image(thumb.asImageBitmap(), "Last photo", Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)

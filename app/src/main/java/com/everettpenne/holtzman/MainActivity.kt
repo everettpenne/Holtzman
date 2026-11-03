@@ -15,7 +15,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         intent?.getStringExtra("dbg")?.let { com.everettpenne.holtzman.save.DebugFlags.raw = it }
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
-        setContent { HoltzmanRoot() }
+        setContent { HoltzmanRoot(startInVideo = CaptureContract.wantsVideo(intent)) }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
