@@ -51,7 +51,7 @@ fun SettingsSheet(
 
             GlassSectionHeader("Photos")
             GlassGroup {
-                SwitchRow("Computational photo", "Merges six frames, denoises on the TPU", computational) { onComputational(it) }
+                SwitchRow("Computational photo", "Merges six frames into one photo", computational) { onComputational(it) }
                 GlassRowDivider()
                 SwitchRow("Ultra HDR", "Keeps highlight detail on HDR screens", hdr) { onHdr(it) }
                 GlassRowDivider()
@@ -98,19 +98,20 @@ fun SettingsSheet(
 
             GlassSectionHeader("About")
             GlassGroup {
-                GlassListRow("Version", subtitle = if (developer) "Developer options are shown (tap seven times to hide)" else null,
+                GlassListRow("Version", subtitle = if (developer) "Developer options shown" else null,
                     onClick = { taps++; if (taps >= 7) { taps = 0; developer = !developer; prefs.edit().putBoolean("developer", developer).apply() } },
                     trailing = { Value(com.everettpenne.holtzman.BuildConfig.VERSION_NAME) })
                 GlassRowDivider()
-                GlassListRow("Denoiser", trailing = { Value(when (tpu) { true -> "Learned, on the TPU"; false -> "Classical"; null -> "…" }) })
+                // the learned denoiser left colour blobs on clean scenes and has been off since 2026-11-02 (only the debug switch "tpu" runs it), so "available" is all that can be said
+                GlassListRow("Learned denoiser", trailing = { Value(when (tpu) { true -> "Available, off"; false -> "Not available"; null -> "…" }) })
                 GlassRowDivider()
                 GlassListRow("Camera", trailing = { Value(android.os.Build.MODEL) })
                 GlassRowDivider()
-                GlassListRow("Subject recognition", subtitle = "DeepLab v3 (MediaPipe), Apache-2.0; runs on this phone", trailing = { Value("On-device") })
+                GlassListRow("Subject recognition", subtitle = "DeepLab v3, Apache-2.0", trailing = { Value("On-device") })
                 GlassRowDivider()
-                GlassListRow("Depth", subtitle = "MiDaS v2.1 small (isl-org), MIT; runs on this phone", trailing = { Value("On-device") })
+                GlassListRow("Depth", subtitle = "MiDaS v2.1 small, MIT", trailing = { Value("On-device") })
                 GlassRowDivider()
-                GlassListRow("Network", subtitle = "The app asks for no network permission; nothing leaves the phone", trailing = { Value("None") })
+                GlassListRow("Network", subtitle = "No network permission", trailing = { Value("None") })
             }
         }
     }

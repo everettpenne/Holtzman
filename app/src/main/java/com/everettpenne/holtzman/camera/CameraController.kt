@@ -101,8 +101,12 @@ class CameraController(private val context: Context) {
     }
     private fun facesOf(result: TotalCaptureResult): List<FaceBox> =
         result.get(CaptureResult.STATISTICS_FACES)?.map { FaceBox(it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom, it.score) } ?: emptyList()
+    /** Told once per opened camera, on the camera thread, when its first preview frame has been captured (the session being configured is earlier: the picture is still black then). */
+    var onFirstFrame: (() -> Unit)? = null
+    @Volatile private var firstFrameSent = false
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            if (!firstFrameSent) { firstFrameSent = true; onFirstFrame?.invoke() }
             val e = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); val i = result.get(CaptureResult.SENSOR_SENSITIVITY)
             if (e != null && i != null) autoSample = AutoSample(e, i, result.get(CaptureResult.LENS_FOCUS_DISTANCE), result.get(CaptureResult.CONTROL_AF_STATE), result.frameNumber)
             latestFaces = facesOf(result)
@@ -372,6 +376,7 @@ class CameraController(private val context: Context) {
     fun open(lens: Lens, surface: Surface, wantRaw: Boolean, extension: Int? = null, video: VideoQuality? = null, burst: Boolean = false, zsl: Boolean = false, startZoom: Float = 1f, onReady: () -> Unit, onError: (String) -> Unit) {
         close()
         shake.start()
+        firstFrameSent = false
         val gen = ++generation
         val id = idFor(lens) ?: return onError("This phone has no ${lens.name.lowercase()} camera.")
         val chars = manager.getCameraCharacteristics(id)

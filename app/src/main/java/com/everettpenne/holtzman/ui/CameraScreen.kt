@@ -236,7 +236,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
         previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
-        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { veil = false; rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -268,7 +268,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     val shutterDip = remember { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(flashTick) { if (flashTick > 0) { shutterDip.snapTo(.8f); shutterDip.animateTo(0f, androidx.compose.animation.core.tween(220)) } }
     val veilAlpha by androidx.compose.animation.core.animateFloatAsState(if (veil) 1f else 0f, androidx.compose.animation.core.tween(if (veil) 120 else 260), label = "veil")
-    LaunchedEffect(veil) { if (veil) { delay(2500); veil = false } }   // never stuck dark if the camera does not report back
+    LaunchedEffect(veil) { if (veil) { delay(2500); veil = false } }
+    // the veil comes off with the first preview frame (the session being ready is earlier, and the picture is still black then), a moment later so that frame is on the screen
+    DisposableEffect(controller) { controller.onFirstFrame = { scope.launch { delay(120); veil = false } }; onDispose { controller.onFirstFrame = null } }   // never stuck dark if the camera does not report back
 
     fun shootBurst() {
         if (shutterBusy) return
@@ -421,7 +423,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 val saved = runCatching { saver.save(still, hdrBytes, keepDng = raw && !night) }
                 withContext(Dispatchers.Main) {
                     busy = false
-                    saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" }; if (zoom < 0.99f || zoom > 1.01f) status = status + zoomNote(zoom) }.onFailure { status = "Couldn't save: ${it.message}" }
+                    saved.onSuccess { last = it; onCaptured?.invoke(it.jpeg, "image/jpeg"); status = when { hdrBytes != null && it.dng != null -> "Saved Ultra HDR + DNG"; hdrBytes != null -> "Saved Ultra HDR"; hdr && !night && !wantHdr -> "Saved (Ultra HDR needs 1×)"; hdr && !night -> "Saved (no highlights to recover)"; it.dng != null -> "Saved JPEG + DNG"; night -> "Saved (Night)"; else -> "Saved" }; if (zoom < 0.99f || zoom > 1.01f) status = (if (it.dng != null) "Saved JPEG + DNG" else "Saved") + zoomNote(zoom) }.onFailure { status = "Couldn't save: ${it.message}" }
                 }
             }
         }, onError = { scope.launch(Dispatchers.Main) { busy = false; status = it } })
