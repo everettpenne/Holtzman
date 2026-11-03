@@ -208,7 +208,7 @@ fun DialCard(title: String, value: String, stops: List<String>, index: Int, onIn
  */
 @Composable
 fun ProReadout(items: List<Triple<String, Boolean, () -> Unit>>, modifier: Modifier = Modifier) {
-    Row(modifier.liquid(CircleShape).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.liquidText(CircleShape).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         items.forEach { (text, manual, onClick) ->
             Text(text, maxLines = 1, softWrap = false, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.3.sp, fontFeatureSettings = "tnum"),
                 color = if (manual) CameraYellow else Color.White.copy(alpha = .9f),

@@ -12,3 +12,23 @@
 **How it works.** The Glass kit samples a Compose layer, and the viewfinder is a `TextureView` that no layer can record. `LiquidCamera.kt` reads a 96 x 128 copy of the live picture back about ten times a second, draws it into a layer of its own at the viewfinder's place (under the real viewfinder, so never seen), and provides that layer as `LocalGlassBackdrop`. Every glass piece samples it. Cost: one small `getBitmap` per 100 ms, only while the setting is on and the camera is showing.
 
 **Seen (Android emulator, 2026-11-02; not on the phone, which was disconnected):** the sheet frosting and bending the picture behind it, the tip card, the status pill and the zoom pill as glass with a lit rim and lens; buttons over the black bars as dark discs with a rim. **Not seen:** the flat/glass comparison on the phone, the top bar's flash and night buttons, the readout, the dial cards, the press swell on a real finger, performance (frame rate, heat) on the Pixel 10a.
+
+## Round two: Apple's own guidance (2026-11-03)
+
+Sources: coverage of the iOS 26 Camera ([MacRumors guide](https://www.macrumors.com/guide/ios-26-camera-app)), Apple's Liquid Glass guidance as summarised by [Create with Swift](https://www.createwithswift.com/exploring-a-new-visual-language-liquid-glass/) and [Wikipedia](https://en.wikipedia.org/wiki/Liquid_Glass). Apple's own pages are script-rendered and could not be read directly, so the rules below are second-hand and should be checked against developer.apple.com before leaning on them.
+
+| What Apple does or advises | What the app does now |
+|---|---|
+| The bar behind the lens (zoom) buttons was removed | The glass pill is gone; only the selected zoom is a small glass bubble |
+| The shutter has a glass ring, not a bright white one | A glass ring with a thin white edge around the white disc |
+| The photo-review button is round | Round in glass mode |
+| Tapping the active mode (Photo) opens the glass menu | Tapping the lit PHOTO or VIDEO opens the controls sheet |
+| The area behind the controls is more transparent: more of the frame shows past the picture | The bars around the picture show the live frame as a soft dim glow (also gives the glass something to bend) |
+| Avoid glass on glass | The sheet's buttons are flat translucent discs inside the glass sheet |
+| Prefer the regular (frosted) material where text must stay legible | The readout and status pill use a darker, blurrier glass than the plain buttons |
+| Sheets morph out of the button that opens them | The controls sheet grows from the six-dots corner with the kit's opening spring |
+| Controls give a light haptic | Round controls tick on press |
+| Reduce Transparency / Reduce Motion calm the material | High-contrast text or animations off returns the camera to the flat look |
+| Tint only for primary or meaningful actions | Unchanged: yellow means on or manual, nothing else is tinted |
+
+Not done: a top-right menu button (the six dots at the bottom stay), swiping up for settings (Apple's coverage does not clearly describe it), concentric-radius audit of every nested shape, and the viewfinder reaching under the controls (the picture is still a letterboxed 4:3).

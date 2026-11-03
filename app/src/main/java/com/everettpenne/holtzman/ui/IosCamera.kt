@@ -139,7 +139,8 @@ fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<Strip
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         shown.forEach { item ->
                             Column(Modifier.width(78.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Box(Modifier.size(60.dp).liquid(CircleShape, Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
+                                // flat inside the glass sheet: Apple's guidance is no glass on glass
+                            Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
                                     tile(item, item in on)
                                     if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(10.dp).size(8.dp).background(CameraYellow, CircleShape))
                                 }

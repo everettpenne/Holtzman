@@ -231,8 +231,10 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // Below 1x the camera is opened without a RAW stream: with one it stays on the main lens (the .6 view was the 1x view, 2026-11-02), so the ultrawide needs the plain session.
     // The shot there is the camera's own JPEG. Crossing 1x reopens the camera at the zoom it had.
     // the Liquid Glass experiment: glass controls over the live picture (a setting, so the flat look stays to compare)
-    var liquid by remember { mutableStateOf(prefs.getBoolean("liquidGlass", true)) }
-    LaunchedEffect(liquid) { prefs.edit().putBoolean("liquidGlass", liquid).apply() }
+    var liquidSetting by remember { mutableStateOf(prefs.getBoolean("liquidGlass", true)) }
+    LaunchedEffect(liquidSetting) { prefs.edit().putBoolean("liquidGlass", liquidSetting).apply() }
+    val calmScreen = remember(resumed) { reduceTransparency(context) }   // high-contrast text or animations off: the flat, calmer look whatever the setting says
+    val liquid = liquidSetting && !calmScreen
     val previewGlass = rememberPreviewGlass(previewView, liquid && resumed)
     val wide = zoom < 0.99f && !dataset && !videoMode
     var veil by remember { mutableStateOf(false) }
@@ -602,24 +604,24 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                         Text("Dataset  ·  ${datasetKind.label}" + if (datasetSaved > 0) "  ·  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
                     }
                     status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 24.dp).liquid(RoundedCornerShape(16.dp), Color.Black.copy(alpha = .7f)).padding(horizontal = 14.dp, vertical = 8.dp)) }
+                        modifier = Modifier.padding(horizontal = 24.dp).liquidText(RoundedCornerShape(16.dp), Color.Black.copy(alpha = .7f)).padding(horizontal = 14.dp, vertical = 8.dp)) }
                 }
                 // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
                 if (activeItem == null && !showControls) run {   // the zoom numbers make way for an open card (whose shutter floats where they are) and for the controls sheet
                     val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
                     // sliding along the numbers zooms continuously (a zoom dial of sorts), as a pinch does; a tap on a number goes straight to it
-                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp).liquid(RoundedCornerShape(50), Color.Transparent).padding(horizontal = 4.dp)
+                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp)
                         .pointerInput(Unit) { detectHorizontalDragGestures { change, dx -> change.consume(); zoom = controller.setZoom(controller.zoom * kotlin.math.exp(dx / 260f)) } },
                         horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
                         stops.forEach { stop ->
                             val on = kotlin.math.abs(zoom - stop) < 0.05f
                             val num = if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}"
-                            Box(Modifier.size(48.dp).padding(if (on) 5.dp else 7.dp).clip(CircleShape).background(if (on) (if (liquid) Color.White.copy(alpha = .2f) else Color.Black.copy(alpha = .5f)) else Color.Transparent).clickable { zoom = controller.setZoom(stop) }.semantics { contentDescription = "Zoom $num times" + if (on) ", selected" else "" }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(48.dp).padding(if (on) 5.dp else 7.dp).then(if (on) Modifier.liquid(CircleShape, Color.Black.copy(alpha = .5f)) else Modifier.clip(CircleShape)).clickable { zoom = controller.setZoom(stop) }.semantics { contentDescription = "Zoom $num times" + if (on) ", selected" else "" }, contentAlignment = Alignment.Center) {
                                 Text(if (on) "$num×" else num, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = if (on) CameraYellow else Color.White)
                             }
                         }
                         if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
-                            Box(Modifier.size(44.dp).background(if (liquid) Color.White.copy(alpha = .2f) else Color.Black.copy(alpha = .5f), CircleShape), contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(44.dp).liquid(CircleShape, Color.Black.copy(alpha = .5f)), contentAlignment = Alignment.Center) {
                                 Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = CameraYellow)
                             }
                     }
@@ -635,16 +637,18 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
             Row(Modifier.fillMaxWidth().padding(horizontal = 38.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 if (!cardOpen && !videoMode && !manualExposureOn) CamCircle(48.dp, "Exposure", { activeItem = StripItem.EXPOSURE; showControls = false }, lit = evEff != 0f) { Icon(Icons.Rounded.Exposure, null, tint = if (evEff != 0f) CameraYellow else Color.White, modifier = Modifier.size(24.dp)) }
                 else Spacer(Modifier.size(48.dp))
+                // iOS 26 has no bright white ring: a ring of glass around the white disc
+                val shutterRing: Modifier = if (liquid) Modifier.liquid(CircleShape, Color.Transparent).border(1.dp, Color.White.copy(alpha = .35f), CircleShape) else Modifier.border(4.dp, Color.White.copy(alpha = .55f), CircleShape)
                 // the shutter: a white disc in a grey ring; in video the disc is red, and a small red square while recording. The whole 80 dp is the button.
                 Box(Modifier.size(80.dp).clip(CircleShape).clickable(enabled = !shutterBusy) { trigger() }.semantics { contentDescription = if (videoMode) (if (recording) "Stop recording" else "Record") else "Shutter" }
-                    .border(4.dp, Color.White.copy(alpha = .55f), CircleShape).padding(if (recording) 24.dp else 6.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
+                    .then(shutterRing).padding(if (recording) 24.dp else 6.dp).clip(if (recording) RoundedCornerShape(8.dp) else CircleShape)
                     .background(if (videoMode) Color(0xFFFF3B30) else if (shutterBusy) Color.White.copy(alpha = .55f) else Color.White))
                 if (!cardOpen) CamCircle(48.dp, "Controls", { showControls = !showControls; activeItem = null }, lit = showControls || changed.isNotEmpty()) { SixDots(color = if (changed.isNotEmpty() && !showControls) CameraYellow else Color.White) }
                 else Spacer(Modifier.size(48.dp))
             }
             if (!cardOpen) {
                 Spacer(Modifier.height(14.dp))
-                val thumbShape = if (liquid) com.everettpenne.glass.SquircleShape(12.dp) else RoundedCornerShape(12.dp)
+                val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman")) status = "Sietch is not installed" }, enabled = if (videoMode) lastVideo != null else last != null) {
                         (if (videoMode) lastVideo else last?.jpeg)?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(it, if (videoMode) "video/mp4" else "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } }
@@ -657,7 +661,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                             androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), color = CameraYellow, strokeWidth = 2.dp)
                         }
                     }
-                    if (!recording) ModeCapsule(videoMode, true, { v -> videoMode = v; if (v) night = false }) else Spacer(Modifier.size(1.dp))
+                    if (!recording) ModeCapsule(videoMode, true, { v -> if (v == videoMode) { showControls = true; activeItem = null } else { videoMode = v; if (v) night = false } })   // as on iOS 26, a tap on the active mode opens the controls else Spacer(Modifier.size(1.dp))
                     CamCircle(46.dp, "Switch camera", { lens = if (lens == Lens.BACK) Lens.FRONT else Lens.BACK }) { Icon(Icons.Rounded.FlipCameraAndroid, null, tint = Color.White) }
                 }
             } else {
@@ -708,7 +712,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     StripItem.SETTINGS -> { showControls = false; showSettings = true }
                     else -> { showControls = false; startStylesOnTexture = false; activeItem = i }
                 }
-            }, Modifier.align(Alignment.BottomCenter)) { item, isOn ->
+            }, Modifier.align(Alignment.BottomCenter).glassEnter(androidx.compose.ui.graphics.TransformOrigin(.9f, 1f))) { item, isOn ->
                 val tint = if (isOn) CameraYellow else Color.White
                 when (item) {
                     StripItem.FLASH -> Icon(flashIcon, null, tint = if (flash != FlashMode.OFF) CameraYellow else Color.White, modifier = Modifier.size(27.dp))
@@ -736,7 +740,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         ChooseStyleScreen(preset, { preset = it }, styleIntensity, chooseThumb, { showChooseStyle = false },
             { showChooseStyle = false; startStylesOnTexture = true; activeItem = StripItem.STYLES })
     }
-    if (showSettings) SettingsSheet(liquid = liquid, onLiquid = { liquid = it }, 
+    if (showSettings) SettingsSheet(liquid = liquidSetting, onLiquid = { liquidSetting = it }, 
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
         raw = raw, onRaw = { raw = it },

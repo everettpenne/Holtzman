@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -80,6 +81,13 @@ fun PreviewBackdropLayer(glass: PreviewGlass, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().layerBackdrop(glass.backdrop).drawBehind {
         drawRect(Color.Black)
         val image = glass.shown; val r = glass.rect
+        // iOS 26: the area behind the controls is more transparent, so more of the frame shows past the picture. The bars around the picture get the live frame, filled to the
+        // screen, as a soft dim glow (it is a 96 x 128 copy stretched ~20x, so it is a blur already), which also gives the glass there something to bend.
+        if (image != null) {
+            val k = maxOf(size.width / image.width, size.height / image.height)
+            val dw = image.width * k; val dh = image.height * k
+            drawImage(image, dstOffset = IntOffset(((size.width - dw) / 2f).roundToInt(), ((size.height - dh) / 2f).roundToInt()), dstSize = IntSize(dw.roundToInt(), dh.roundToInt()), alpha = .42f, filterQuality = FilterQuality.Medium)
+        }
         if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
     })
 }
@@ -97,7 +105,34 @@ fun Modifier.liquidPanel(shape: Shape, flat: Color): Modifier =
 /** A round control: a glass button that swells under the finger, or the flat dark disc. */
 @Composable
 fun CamCircle(size: Dp, description: String, onClick: () -> Unit, lit: Boolean = false, content: @Composable BoxScope.() -> Unit) {
-    if (LocalLiquid.current) GlassCircleButton(onClick, size = size, description = description, shadowed = false, content = content)
-    else Box(Modifier.size(size).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = if (lit) .22f else .13f)).clickable(onClick = onClick)
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val tick = { com.everettpenne.glass.GlassFeel.play(haptic, com.everettpenne.glass.GlassFeel.Cue.TICK); onClick() }
+    if (LocalLiquid.current) GlassCircleButton(tick, size = size, description = description, shadowed = false, content = content)
+    else Box(Modifier.size(size).clip(CircleShape).background(Color.Black.copy(alpha = .35f)).background(Color.White.copy(alpha = if (lit) .22f else .13f)).clickable(onClick = tick)
         .semantics { contentDescription = description }, contentAlignment = Alignment.Center, content = content)
+}
+
+/**
+ * Glass under text (the readout, the status pill): the more frosted kind, darker and blurrier than a plain control's clear glass, because Apple's guidance is to
+ * prefer the regular material where legibility is uncertain (text over a bright or busy picture, direct sun).
+ */
+@Composable
+fun Modifier.liquidText(shape: Shape, flat: Color = Color.Black.copy(alpha = .45f)): Modifier =
+    if (LocalLiquid.current) glassSurface(shape, tint = Color.Black.copy(alpha = .34f), blurRadius = 8f, lensHeight = 8f, lensAmount = 16f, shadowed = false) else clip(shape).background(flat)
+
+/**
+ * Apple's Reduce Transparency has no Android twin; the nearest settings of a person who wants a calmer, more legible screen are high-contrast text and animations
+ * switched off, so either of them returns the camera to its flat look.
+ */
+fun reduceTransparency(context: android.content.Context): Boolean = runCatching {
+    val cr = context.contentResolver
+    android.provider.Settings.Secure.getInt(cr, "high_text_contrast_enabled", 0) == 1 || android.provider.Settings.Global.getFloat(cr, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+}.getOrDefault(false)
+
+/** A panel opening out of the button that opened it: it grows from [origin] with the kit's opening spring and fades in, as iOS 26's sheets morph out of their buttons. */
+@Composable
+fun Modifier.glassEnter(origin: androidx.compose.ui.graphics.TransformOrigin): Modifier {
+    val t = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) { t.animateTo(1f, com.everettpenne.glass.GlassFeel.open()) }
+    return this.graphicsLayer { val v = t.value; scaleX = .86f + .14f * v; scaleY = .86f + .14f * v; alpha = v.coerceIn(0f, 1f); transformOrigin = origin }
 }
