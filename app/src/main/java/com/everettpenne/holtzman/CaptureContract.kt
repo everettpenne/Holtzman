@@ -35,6 +35,12 @@ object CaptureContract {
         return result(uri, mime)
     }
 
+    /** Offers one photo or video to any app that takes a shared file (messages, mail, cloud storage...); false when nothing can. */
+    fun share(context: Context, uri: Uri, mime: String): Boolean = runCatching {
+        val send = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri).apply { clipData = ClipData.newRawUri("", uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        context.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.isSuccess
+
     /** Opens one photo or video in whatever gallery the person uses; false when no app can show it. */
     fun view(context: Context, uri: Uri, mime: String): Boolean = runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).apply { clipData = ClipData.newRawUri("", uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) })

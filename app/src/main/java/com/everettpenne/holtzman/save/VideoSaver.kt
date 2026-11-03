@@ -44,4 +44,15 @@ class VideoSaver(private val resolver: ContentResolver) {
         if (ok) resolver.update(video.uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
         else runCatching { resolver.delete(video.uri, null, null) }
     }
+
+    /** The app's own videos, newest first (at most 300), as the media library lists them; empty when there are none. Only the app's own files are visible to it. */
+    fun listVideos(): List<android.net.Uri> = runCatching {
+        val args = android.os.Bundle().apply {
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?")
+            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(Environment.DIRECTORY_MOVIES + "/Holtzman%"))
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.MediaColumns.DATE_ADDED} DESC")
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 300)
+        }
+        resolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c -> buildList { while (c.moveToNext()) add(android.content.ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(0))) } } ?: emptyList()
+    }.getOrDefault(emptyList())
 }

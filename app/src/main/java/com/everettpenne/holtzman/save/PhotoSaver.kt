@@ -173,4 +173,15 @@ class PhotoSaver(private val resolver: ContentResolver) {
             "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?", arrayOf(Environment.DIRECTORY_PICTURES + "/Holtzman%", "image/jpeg"),
             "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
     }.onFailure { android.util.Log.w("HoltzmanSave", "could not find the latest photo", it) }.getOrNull()
+
+    /** The app's own photos, newest first (at most 300), as the media library lists them; empty when there are none. Only the app's own files are visible to it. */
+    fun listPhotos(): List<android.net.Uri> = runCatching {
+        val args = android.os.Bundle().apply {
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?")
+            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(Environment.DIRECTORY_PICTURES + "/Holtzman%", "image/jpeg"))
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.MediaColumns.DATE_ADDED} DESC")
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 300)
+        }
+        resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c -> buildList { while (c.moveToNext()) add(android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0))) } } ?: emptyList()
+    }.getOrDefault(emptyList())
 }

@@ -173,6 +173,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var elapsed by remember { mutableIntStateOf(0) }
     var quality by remember { mutableStateOf<VideoQuality?>(null) }
     var lastVideo by remember { mutableStateOf<android.net.Uri?>(null) }
+    var viewerItems by remember { mutableStateOf<List<android.net.Uri>?>(null) }
+    var viewerStart by remember { mutableStateOf(0) }
     val videoSaver = remember { VideoSaver(context.contentResolver) }
     var pendingVideo by remember { mutableStateOf<PendingVideo?>(null) }
     var audioGranted by remember { mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
@@ -668,7 +670,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
-                        (if (videoMode) lastVideo else last?.jpeg)?.let { if (!CaptureContract.view(context, it, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" }
+                        (if (videoMode) lastVideo else last?.jpeg)?.let { current -> scope.launch { val all = withContext(Dispatchers.IO) { if (videoMode) videoSaver.listVideos() else saver.listPhotos() }
+                            if (all.isEmpty()) { if (!CaptureContract.view(context, current, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" } else { viewerStart = all.indexOf(current).coerceAtLeast(0); viewerItems = all } } }
                     }, contentAlignment = Alignment.Center) {
                         val thumb = lastThumb
                         if (thumb != null) androidx.compose.foundation.Image(thumb.asImageBitmap(), "Last photo", Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
@@ -757,6 +760,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         ChooseStyleScreen(preset, { preset = it }, styleIntensity, chooseThumb, { showChooseStyle = false },
             { showChooseStyle = false; startStylesOnTexture = true; activeItem = StripItem.STYLES })
     }
+    viewerItems?.let { MediaViewer(it, viewerStart, videoMode) { viewerItems = null } }   // the app's own swipeable viewer, over everything
     if (showSettings) SettingsSheet(liquid = liquidSetting, onLiquid = { liquidSetting = it }, 
         computational = burst, onComputational = { burst = it },
         hdr = hdr, onHdr = { hdr = it },
