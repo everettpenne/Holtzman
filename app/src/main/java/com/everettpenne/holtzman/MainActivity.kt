@@ -30,9 +30,11 @@ open class MainActivity : ComponentActivity() {
 
     // The screen stays on while the camera is used, and goes back to the phone's own timeout after two minutes without a touch. Holtzman never held it on: the screen
     // dimmed and slept while framing a shot, and on the lock screen (where the timeout is a few seconds) the camera opened by the power button was gone before it was used.
+    /** How long the screen is held on after the last touch. */
+    protected open val awakeMs: Long = 120_000L
     private val idle = android.os.Handler(android.os.Looper.getMainLooper())
     private val letSleep = Runnable { window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-    private fun stayAwake() { window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); idle.removeCallbacks(letSleep); idle.postDelayed(letSleep, 120_000L) }
+    private fun stayAwake() { window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); idle.removeCallbacks(letSleep); idle.postDelayed(letSleep, awakeMs) }
     override fun onResume() { super.onResume(); stayAwake() }
     override fun onPause() { super.onPause(); idle.removeCallbacks(letSleep) }
     override fun onUserInteraction() { super.onUserInteraction(); stayAwake() }

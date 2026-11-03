@@ -57,7 +57,6 @@
             android:name=".SecureCameraActivity"
             android:exported="true"
             android:showWhenLocked="true"
-            android:turnScreenOn="true"
             android:excludeFromRecents="true"
             android:taskAffinity="com.everettpenne.holtzman.secure"
             android:launchMode="singleTask"
