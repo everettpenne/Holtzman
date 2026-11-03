@@ -19,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Rect
@@ -79,7 +81,7 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
                 glass.shown = images[next]; next = 1 - next
                 // two halvings-and-more with filtering, so each patch is an average of its area, not a sample of it
                 val mid = Bitmap.createScaledBitmap(bitmaps[1 - next], 24, 32, true)
-                glass.wash = Bitmap.createScaledBitmap(mid, 6, 8, true).asImageBitmap(); mid.recycle()
+                glass.wash = mid.asImageBitmap()
             }
             delay(100)
         }
@@ -90,15 +92,19 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
 /** The recorded layer: black with the live picture at the viewfinder's place. It sits under the real viewfinder, so it is never seen, only sampled. */
 @Composable
 fun PreviewBackdropLayer(glass: PreviewGlass, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize().layerBackdrop(glass.backdrop).drawBehind {
-        drawRect(Color.Black)
-        val image = glass.shown; val r = glass.rect
-        // iOS 26: the area behind the controls is more transparent, so something shows past the picture. The bars around it get the frame as a smooth wash of colour
-        // (6 x 8 patches stretched with filtering), not the frame itself: stretched to the screen the frame was a recognisable, zoomed-in picture that looked wrong in the bars.
-        val wash = glass.wash
-        if (wash != null) drawImage(wash, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()), alpha = .6f, filterQuality = FilterQuality.High)
-        if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
-    })
+    Box(modifier.fillMaxSize().layerBackdrop(glass.backdrop).drawBehind { drawRect(Color.Black) }) {
+        // iOS 26: the area behind the controls is more transparent, so something shows past the picture. The bars around it get the frame as a smooth wash of colour: a
+        // 24 x 32 reduction, stretched to the screen and blurred wide, so no scene and no block can be made out (stretched plain, the frame was a recognisable zoomed-in picture
+        // and the reduction alone showed its pixels).
+        Box(Modifier.fillMaxSize().blur(60.dp, BlurredEdgeTreatment.Unbounded).drawBehind {
+            val wash = glass.wash
+            if (wash != null) drawImage(wash, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()), alpha = .6f, filterQuality = FilterQuality.Medium)
+        })
+        Box(Modifier.fillMaxSize().drawBehind {
+            val image = glass.shown; val r = glass.rect
+            if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
+        })
+    }
 }
 
 /**
