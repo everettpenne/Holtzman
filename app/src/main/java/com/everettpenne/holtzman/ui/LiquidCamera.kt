@@ -19,8 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Rect
@@ -63,8 +61,6 @@ val LocalLiquid = compositionLocalOf { false }
 class PreviewGlass(val backdrop: LayerBackdrop) {
     var rect by mutableStateOf(Rect.Zero)
     var shown by mutableStateOf<ImageBitmap?>(null)
-    /** The same picture reduced to a few colour patches: the soft wash behind the bars, in which no scene can be made out. */
-    var wash by mutableStateOf<ImageBitmap?>(null)
 }
 
 @Composable
@@ -79,9 +75,6 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
         while (isActive) {
             if (view.isAvailable && runCatching { view.getBitmap(bitmaps[next]) }.isSuccess) {
                 glass.shown = images[next]; next = 1 - next
-                // two halvings-and-more with filtering, so each patch is an average of its area, not a sample of it
-                val mid = Bitmap.createScaledBitmap(bitmaps[1 - next], 24, 32, true)
-                glass.wash = mid.asImageBitmap()
             }
             delay(100)
         }
@@ -93,13 +86,8 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
 @Composable
 fun PreviewBackdropLayer(glass: PreviewGlass, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().layerBackdrop(glass.backdrop).drawBehind { drawRect(Color.Black) }) {
-        // iOS 26: the area behind the controls is more transparent, so something shows past the picture. The bars around it get the frame as a smooth wash of colour: a
-        // 24 x 32 reduction, stretched to the screen and blurred wide, so no scene and no block can be made out (stretched plain, the frame was a recognisable zoomed-in picture
-        // and the reduction alone showed its pixels).
-        Box(Modifier.fillMaxSize().blur(60.dp, BlurredEdgeTreatment.Unbounded).drawBehind {
-            val wash = glass.wash
-            if (wash != null) drawImage(wash, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()), alpha = .6f, filterQuality = FilterQuality.Medium)
-        })
+        // The bars around the picture stay plain black, as on the iOS camera: a wash of the scene there (stretched, then blurred) added nothing and made the bars lag behind the
+        // picture. Glass only has the picture to bend where it overlaps it (the sheet, the tip, the zoom stops).
         Box(Modifier.fillMaxSize().drawBehind {
             val image = glass.shown; val r = glass.rect
             if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
