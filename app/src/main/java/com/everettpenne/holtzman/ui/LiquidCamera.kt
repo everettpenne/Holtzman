@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -60,6 +61,8 @@ val LocalLiquid = compositionLocalOf { false }
 /** The layer the glass samples, the picture it holds and where in the screen the viewfinder is. */
 class PreviewGlass(val backdrop: LayerBackdrop) {
     var rect by mutableStateOf(Rect.Zero)
+    /** The part of [rect] the picture shows (a ratio narrower than the sensor's cuts it): the glass sees nothing outside it. */
+    var visible by mutableStateOf(Rect.Zero)
     var shown by mutableStateOf<ImageBitmap?>(null)
 }
 
@@ -69,14 +72,14 @@ fun rememberPreviewGlass(view: TextureView?, enabled: Boolean): PreviewGlass {
     val glass = remember(backdrop) { PreviewGlass(backdrop) }
     LaunchedEffect(view, enabled) {
         if (!enabled || view == null) return@LaunchedEffect
-        val bitmaps = Array(2) { Bitmap.createBitmap(96, 128, Bitmap.Config.ARGB_8888) }
+        val bitmaps = Array(2) { Bitmap.createBitmap(72, 96, Bitmap.Config.ARGB_8888) }
         val images = bitmaps.map { it.asImageBitmap() }
         var next = 0
         while (isActive) {
             if (view.isAvailable && runCatching { view.getBitmap(bitmaps[next]) }.isSuccess) {
                 glass.shown = images[next]; next = 1 - next
             }
-            delay(100)
+            delay(125)
         }
     }
     return glass
@@ -89,8 +92,8 @@ fun PreviewBackdropLayer(glass: PreviewGlass, modifier: Modifier = Modifier) {
         // The bars around the picture stay plain black, as on the iOS camera: a wash of the scene there (stretched, then blurred) added nothing and made the bars lag behind the
         // picture. Glass only has the picture to bend where it overlaps it (the sheet, the tip, the zoom stops).
         Box(Modifier.fillMaxSize().drawBehind {
-            val image = glass.shown; val r = glass.rect
-            if (image != null && r.width > 1f) drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium)
+            val image = glass.shown; val r = glass.rect; val v = glass.visible
+            if (image != null && r.width > 1f) clipRect(v.left, v.top, v.right, v.bottom) { drawImage(image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()), dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium) }
         })
     }
 }

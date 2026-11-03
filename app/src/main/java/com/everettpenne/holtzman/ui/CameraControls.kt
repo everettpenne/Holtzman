@@ -33,7 +33,7 @@ import com.everettpenne.holtzman.save.BurstRender.LookPreset
 
 /** The crops on offer, as the long side over the short side of the picture (the sensor's 4:3 is 1.333): the long side is cut for the narrower ones, the short side for 16:9. */
 enum class PhotoRatio(val label: String, val longOverShort: Float) {
-    FULL("Full (4:3)", 4f / 3f), SQUARE("1:1", 1f), FOUR_FIVE("4:5", 1.25f), WIDE("16:9", 16f / 9f);
+    FULL("4:3", 4f / 3f), SQUARE("1:1", 1f), FOUR_FIVE("4:5", 1.25f), WIDE("16:9", 16f / 9f);
     val isFull: Boolean get() = this == FULL
 }
 

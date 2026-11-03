@@ -32,6 +32,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.toSize
+import kotlin.math.roundToInt
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
@@ -525,104 +529,119 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 ))
             } }
             // ---- the viewfinder
-            Box(Modifier.fillMaxWidth().aspectRatio(ratio).onGloballyPositioned { previewGlass.rect = it.boundsInRoot() }) {   // square-cornered, as the iPhone's
-                // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
-                // surface the camera is about to be given.
-                AndroidView(
-                    factory = { c -> android.view.TextureView(c).apply {
-                        surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) { previewTexture = st }
-                            override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
-                            override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean { previewTexture = null; return true }
-                            override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
-                        }
-                        previewView = this
-                    } },
-                    modifier = Modifier.matchParentSize(),
-                )
-                Box(Modifier.matchParentSize().graphicsLayer { alpha = maxOf(shutterDip.value, veilAlpha) }.background(Color.Black))
-                // the first time: what the touches do, once, and away at a tap (nothing else in the picture says that a long press locks, or that the numbers slide)
+            // The picture is as big as the ratio says (4:3 is the sensor's own shape; 16:9 is taller, 1:1 shorter) and the controls stay where they were, on top of it: the
+            // stage is always the 4:3 area under the top row, the picture sits in it (a taller one runs down under the controls) and everything that is not the picture is
+            // laid on the stage, not on the picture. The preview is the sensor's 4:3 buffer, scaled to cover the picture and cut to it, as the photo is cut.
+            val cropActive = computational && rawAvailable && !videoMode && !cropRatio.isFull
+            val pictureHW = if (cropActive) cropRatio.longOverShort else 1f / ratio   // the picture's height over its width
+            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().layout { m, c ->
+                val w = c.maxWidth; val h = maxOf(w / ratio, w * pictureHW).roundToInt(); val p = m.measure(androidx.compose.ui.unit.Constraints.fixed(w, h)); layout(w, h) { p.place(0, 0) }
+            }) {
+                val w = maxWidth; val stageH = w / ratio; val pictureH = w * pictureHW
+                val coverW = maxOf(w, pictureH * ratio); val coverH = coverW / ratio   // the buffer scaled to cover the picture
+                val visibleX = w / coverW; val visibleY = pictureH / coverH             // the part of the buffer the picture shows
                 var tourSeen by remember { mutableStateOf(prefs.getBoolean("tourSeen", false)) }
-                if (!tourSeen && !videoMode) Column(Modifier.align(Alignment.Center).padding(horizontal = 28.dp).liquidPanel(RoundedCornerShape(26.dp), Color(0xE61C1C1E))
-                    .clickable { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply() }.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Using the camera", style = IosType.headline, color = Color.White)
-                    listOf("Tap the picture to focus; drag up or down for exposure", "Press and hold to lock focus and exposure", "Pinch, or slide along the zoom numbers, to zoom", "Swipe sideways for video; the six dots open the controls").forEach {
-                        Text(it, style = IosType.subheadline, color = Color.White.copy(alpha = .85f))
-                    }
-                    Text("Tap to close", style = IosType.footnote, color = CameraYellow)
-                }
-                // Touch on the picture: tap to focus (and meter) there, then drag up or down for exposure (the sun beside the focus square), pinch to zoom,
-                // swipe a long way sideways to change mode.
-                Box(Modifier.matchParentSize()
-                    .pointerInput(Unit) { detectTapGestures(
-                        onTap = { p -> if (!tourSeen) { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply(); return@detectTapGestures }   // the first tap only closes the tip
-                            if (aeAfLock) { aeAfLock = false; controller.unlock() }; focusPoint = p; focusTick++; controller.focusAt(p.x / size.width, p.y / size.height) },
-                        onLongPress = { p -> if (focusT == null && nightExtension == null && !videoMode) { focusPoint = p; focusTick++; aeAfLock = true; controller.lockAt(p.x / size.width, p.y / size.height); hostView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } }) }
-                    .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }
-                    .pointerInput(videoMode, recording) { var total = 0f; detectHorizontalDragGestures(onDragStart = { total = 0f }, onDragEnd = { if (!recording) { if (total > 160f && videoMode) { videoMode = false } else if (total < -160f && !videoMode) { videoMode = true; night = false } } }) { _, dx -> total += dx } }
-                    .pointerInput(Unit) { detectVerticalDragGestures { change, dy -> if (focusPoint != null && !manualExposureOn) { evValue = (evValue - dy / 110.dp.toPx()).coerceIn(-2f, 2f); focusTick++; change.consume() } } }) {
-                    focusPoint?.let { p ->
-                        val box = 72.dp
-                        Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x - box.toPx() / 2).toInt(), (p.y - box.toPx() / 2).toInt()) }.size(box).border(1.6.dp, CameraYellow, RoundedCornerShape(4.dp)))
-                        if (!manualExposureOn) {
-                            // the exposure handle: a thin line beside the square with a sun on it that rides up and down with the compensation
-                            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx()).toInt(), (p.y - 55.dp.toPx()).toInt()) }.size(width = 1.5.dp, height = 110.dp).background(CameraYellow.copy(alpha = .8f)))
-                            Icon(Icons.Rounded.WbSunny, null, tint = CameraYellow, modifier = Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx() - 11.dp.toPx()).toInt(), (p.y - (evEff / 2f) * 55.dp.toPx() - 11.dp.toPx()).toInt()) }.size(22.dp))
-                        }
-                    }
-                }
-                // what focus is following (a face, or the subject the finder sees), unless the user has put focus somewhere
                 val tracked by rememberSubjectTracking(previewView, controller, subjectFocus && !videoMode && nightExtension == null && focusT == null && resumed) { deviceDegrees }
-                SubjectOverlay(tracked, hidden = focusPoint != null || aeAfLock, modifier = Modifier.matchParentSize())
-                if (aeAfLock) Text("AE/AF LOCK", style = IosType.caption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp), color = Color.Black,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp).clip(RoundedCornerShape(4.dp)).background(CameraYellow).padding(horizontal = 8.dp, vertical = 3.dp))
-                // the thirds grid, over the picture
-                if (grid) Box(Modifier.matchParentSize().drawBehind {
-                    val c = Color.White.copy(alpha = .35f)
-                    for (i in 1..2) { drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3, 0f), androidx.compose.ui.geometry.Offset(size.width * i / 3, size.height), 1.5f); drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.5f) }
-                })
-                // the crop, shown as the part of the picture that will be cut off (computational photos only: the phone's own JPEG is not cropped)
-                if (computational && rawAvailable && !videoMode && !cropRatio.isFull) Box(Modifier.matchParentSize().drawBehind {
-                    val shade = Color.Black.copy(alpha = .6f); val r = cropRatio.longOverShort; val full = 4f / 3f
-                    if (r < full) { val band = size.height * (1f - r / full) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(size.width, band)); drawRect(shade, androidx.compose.ui.geometry.Offset(0f, size.height - band), androidx.compose.ui.geometry.Size(size.width, band)) }
-                    else { val band = size.width * (1f - full / r) / 2f; drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(band, size.height)); drawRect(shade, androidx.compose.ui.geometry.Offset(size.width - band, 0f), androidx.compose.ui.geometry.Size(band, size.height)) }
-                })
-                // the level line, the histogram and focus peaking, over the picture
                 val roll by rememberRollDegrees(levelOn && !videoMode)
                 val histogram by rememberHistogram(previewView, histogramOn && !videoMode)
                 val peaking by rememberPeaking(previewView, focusT != null && !videoMode)
-                if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
-                LevelOverlay(roll, Modifier.matchParentSize())
-                HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
-                if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
-                // what the camera is doing, at the top of the picture: a dataset session, then any message
-                Column(Modifier.align(Alignment.TopCenter).padding(top = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (dataset && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).clickable { showSettings = false; showDataset = true }.padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.size(8.dp).background(CameraYellow, CircleShape))
-                        Text("Dataset  ·  ${datasetKind.label}" + if (datasetSaved > 0) "  ·  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
+                // ---- the picture
+                val pictureTop = if (pictureHW < 1f / ratio) (stageH - pictureH) / 2 else 0.dp
+                Box(Modifier.offset(y = pictureTop).size(w, pictureH).clip(androidx.compose.ui.graphics.RectangleShape).onGloballyPositioned { previewGlass.visible = androidx.compose.ui.geometry.Rect(it.positionInRoot(), it.size.toSize()) }) {
+                    Box(Modifier.requiredSize(coverW, coverH).align(Alignment.Center).onGloballyPositioned { previewGlass.rect = androidx.compose.ui.geometry.Rect(it.positionInRoot(), it.size.toSize()) }) {   // square-cornered, as the iPhone's
+                    // One view for every pipeline (the normal one and the vendor extensions), never recreated when the mode changes: a new view would destroy the
+                    // surface the camera is about to be given.
+                    AndroidView(
+                        factory = { c -> android.view.TextureView(c).apply {
+                            surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) { previewTexture = st }
+                                override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+                                override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean { previewTexture = null; return true }
+                                override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {}
+                            }
+                            previewView = this
+                        } },
+                        modifier = Modifier.matchParentSize(),
+                    )
+                    if (peaking != null) androidx.compose.foundation.Image(peaking!!.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
+                        SubjectOverlay(tracked, hidden = focusPoint != null || aeAfLock, modifier = Modifier.matchParentSize())
                     }
-                    status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 24.dp).liquidText(RoundedCornerShape(16.dp), Color.Black.copy(alpha = .7f)).padding(horizontal = 14.dp, vertical = 8.dp)) }
-                }
-                // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
-                if (activeItem == null && !showControls) run {   // the zoom numbers make way for an open card (whose shutter floats where they are) and for the controls sheet
-                    val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
-                    // sliding along the numbers zooms continuously (a zoom dial of sorts), as a pinch does; a tap on a number goes straight to it
-                    Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp)
-                        .pointerInput(Unit) { detectHorizontalDragGestures { change, dx -> change.consume(); zoom = controller.setZoom(controller.zoom * kotlin.math.exp(dx / 260f)) } },
-                        horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
-                        stops.forEach { stop ->
-                            val on = kotlin.math.abs(zoom - stop) < 0.05f
-                            val num = if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}"
-                            Box(Modifier.size(48.dp).padding(if (on) 5.dp else 7.dp).then(if (on) Modifier.liquid(CircleShape, Color.Black.copy(alpha = .5f)) else Modifier.clip(CircleShape)).clickable { zoom = controller.setZoom(stop) }.semantics { contentDescription = "Zoom $num times" + if (on) ", selected" else "" }, contentAlignment = Alignment.Center) {
-                                Text(if (on) "$num×" else num, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = if (on) CameraYellow else Color.White)
+                    Box(Modifier.matchParentSize().graphicsLayer { alpha = maxOf(shutterDip.value, veilAlpha) }.background(Color.Black))
+                    // Touch on the picture: tap to focus (and meter) there, then drag up or down for exposure (the sun beside the focus square), pinch to zoom,
+                    // swipe a long way sideways to change mode.
+                    Box(Modifier.matchParentSize()
+                        .pointerInput(Unit) { detectTapGestures(
+                            onTap = { p -> if (!tourSeen) { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply(); return@detectTapGestures }   // the first tap only closes the tip
+                                if (aeAfLock) { aeAfLock = false; controller.unlock() }; focusPoint = p; focusTick++; controller.focusAt(0.5f + (p.x / size.width - 0.5f) * visibleX, 0.5f + (p.y / size.height - 0.5f) * visibleY) },
+                            onLongPress = { p -> if (focusT == null && nightExtension == null && !videoMode) { focusPoint = p; focusTick++; aeAfLock = true; controller.lockAt(0.5f + (p.x / size.width - 0.5f) * visibleX, 0.5f + (p.y / size.height - 0.5f) * visibleY); hostView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } }) }
+                        .pointerInput(Unit) { detectTransformGestures { _, _, factor, _ -> if (factor != 1f) zoom = controller.setZoom(controller.zoom * factor) } }
+                        .pointerInput(videoMode, recording) { var total = 0f; detectHorizontalDragGestures(onDragStart = { total = 0f }, onDragEnd = { if (!recording) { if (total > 160f && videoMode) { videoMode = false } else if (total < -160f && !videoMode) { videoMode = true; night = false } } }) { _, dx -> total += dx } }
+                        .pointerInput(Unit) { detectVerticalDragGestures { change, dy -> if (focusPoint != null && !manualExposureOn) { evValue = (evValue - dy / 110.dp.toPx()).coerceIn(-2f, 2f); focusTick++; change.consume() } } }) {
+                        focusPoint?.let { p ->
+                            val box = 72.dp
+                            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x - box.toPx() / 2).toInt(), (p.y - box.toPx() / 2).toInt()) }.size(box).border(1.6.dp, CameraYellow, RoundedCornerShape(4.dp)))
+                            if (!manualExposureOn) {
+                                // the exposure handle: a thin line beside the square with a sun on it that rides up and down with the compensation
+                                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx()).toInt(), (p.y - 55.dp.toPx()).toInt()) }.size(width = 1.5.dp, height = 110.dp).background(CameraYellow.copy(alpha = .8f)))
+                                Icon(Icons.Rounded.WbSunny, null, tint = CameraYellow, modifier = Modifier.offset { androidx.compose.ui.unit.IntOffset((p.x + box.toPx() / 2 + 14.dp.toPx() - 11.dp.toPx()).toInt(), (p.y - (evEff / 2f) * 55.dp.toPx() - 11.dp.toPx()).toInt()) }.size(22.dp))
                             }
                         }
-                        if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
-                            Box(Modifier.size(44.dp).liquid(CircleShape, Color.Black.copy(alpha = .5f)), contentAlignment = Alignment.Center) {
-                                Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = CameraYellow)
+                    }
+                    if (aeAfLock) Text("AE/AF LOCK", style = IosType.caption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp), color = Color.Black,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp).clip(RoundedCornerShape(4.dp)).background(CameraYellow).padding(horizontal = 8.dp, vertical = 3.dp))
+                    // the thirds grid, over the picture
+                    if (grid) Box(Modifier.matchParentSize().drawBehind {
+                        val c = Color.White.copy(alpha = .35f)
+                        for (i in 1..2) { drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3, 0f), androidx.compose.ui.geometry.Offset(size.width * i / 3, size.height), 1.5f); drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.5f) }
+                    })
+                    LevelOverlay(roll, Modifier.matchParentSize())
+                }
+                // A view is not cut by the clip above (the TextureView draws its whole buffer), so where a shorter picture leaves the scaled buffer showing above and below it, black covers that.
+                if (pictureH < stageH) {
+                    Box(Modifier.fillMaxWidth().height(pictureTop).background(Color.Black))
+                    Box(Modifier.offset(y = pictureTop + pictureH).fillMaxWidth().height(stageH - pictureTop - pictureH).background(Color.Black))
+                }
+                // ---- on the stage, over the picture and the black round it
+                Box(Modifier.size(w, stageH)) {
+                    if (!tourSeen && !videoMode) Column(Modifier.align(Alignment.Center).padding(horizontal = 28.dp).liquidPanel(RoundedCornerShape(26.dp), Color(0xE61C1C1E))
+                        .clickable { tourSeen = true; prefs.edit().putBoolean("tourSeen", true).apply() }.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Using the camera", style = IosType.headline, color = Color.White)
+                        listOf("Tap the picture to focus; drag up or down for exposure", "Press and hold to lock focus and exposure", "Pinch, or slide along the zoom numbers, to zoom", "Swipe sideways for video; the six dots open the controls").forEach {
+                            Text(it, style = IosType.subheadline, color = Color.White.copy(alpha = .85f))
+                        }
+                        Text("Tap to close", style = IosType.footnote, color = CameraYellow)
+                    }
+                    HistogramView(histogram, Modifier.align(Alignment.TopStart).padding(10.dp))
+                    if (countdown > 0) Text("$countdown", style = IosType.largeTitle.copy(fontSize = 96.sp), color = Color.White, modifier = Modifier.align(Alignment.Center))
+                    // what the camera is doing, at the top of the picture: a dataset session, then any message
+                    Column(Modifier.align(Alignment.TopCenter).padding(top = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (dataset && !videoMode) Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .6f)).clickable { showSettings = false; showDataset = true }.padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(Modifier.size(8.dp).background(CameraYellow, CircleShape))
+                            Text("Dataset  ·  ${datasetKind.label}" + if (datasetSaved > 0) "  ·  $datasetSaved saved" else "", style = IosType.footnote.copy(fontWeight = FontWeight.SemiBold), color = Color.White, maxLines = 1)
+                        }
+                        status?.let { Text(it, style = IosType.footnote, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp).liquidText(RoundedCornerShape(16.dp), Color.Black.copy(alpha = .7f)).padding(horizontal = 14.dp, vertical = 8.dp)) }
+                    }
+                    // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
+                    if (activeItem == null && !showControls) run {   // the zoom numbers make way for an open card (whose shutter floats where they are) and for the controls sheet
+                        val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
+                        // sliding along the numbers zooms continuously (a zoom dial of sorts), as a pinch does; a tap on a number goes straight to it
+                        Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp)
+                            .pointerInput(Unit) { detectHorizontalDragGestures { change, dx -> change.consume(); zoom = controller.setZoom(controller.zoom * kotlin.math.exp(dx / 260f)) } },
+                            horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+                            stops.forEach { stop ->
+                                val on = kotlin.math.abs(zoom - stop) < 0.05f
+                                val num = if (stop < 1f) "%.1f".format(java.util.Locale.ROOT, stop).trimStart('0') else "${stop.toInt()}"
+                                Box(Modifier.size(48.dp).padding(if (on) 5.dp else 7.dp).then(if (on) Modifier.liquid(CircleShape, Color.Black.copy(alpha = .5f)) else Modifier.clip(CircleShape)).clickable { zoom = controller.setZoom(stop) }.semantics { contentDescription = "Zoom $num times" + if (on) ", selected" else "" }, contentAlignment = Alignment.Center) {
+                                    Text(if (on) "$num×" else num, style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = if (on) CameraYellow else Color.White)
+                                }
                             }
+                            if (stops.none { kotlin.math.abs(zoom - it) < 0.05f })
+                                Box(Modifier.size(44.dp).liquid(CircleShape, Color.Black.copy(alpha = .5f)), contentAlignment = Alignment.Center) {
+                                    Text("%.1f×".format(java.util.Locale.ROOT, zoom), style = IosType.caption1.copy(fontWeight = FontWeight.SemiBold), color = CameraYellow)
+                                }
+                        }
                     }
                 }
             }
