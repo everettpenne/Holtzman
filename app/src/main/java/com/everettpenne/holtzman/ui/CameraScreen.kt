@@ -73,15 +73,15 @@ private val burstExecutor = java.util.concurrent.Executors.newSingleThreadExecut
 private val burstQueue = burstExecutor.asCoroutineDispatcher()
 
 @Composable
-fun HoltzmanRoot(startInVideo: Boolean = false, onCaptured: ((android.net.Uri, String) -> Unit)? = null) = HoltzmanTheme { CameraGate(startInVideo, onCaptured) }
+fun HoltzmanRoot(startInVideo: Boolean = false, locked: Boolean = false, onCaptured: ((android.net.Uri, String) -> Unit)? = null) = HoltzmanTheme { CameraGate(startInVideo, locked, onCaptured) }
 
 /** Asks for the camera, in words, before anything else; the camera is the one permission the app has. */
 @Composable
-private fun CameraGate(startInVideo: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
+private fun CameraGate(startInVideo: Boolean, locked: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
     val context = LocalContext.current
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    if (granted) CameraScreen(startInVideo, onCaptured) else Box(Modifier.fillMaxSize().background(Color.Black).padding(32.dp), contentAlignment = Alignment.Center) {
+    if (granted) CameraScreen(startInVideo, locked, onCaptured) else Box(Modifier.fillMaxSize().background(Color.Black).padding(32.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Icon(Icons.Rounded.PhotoCamera, null, tint = Holtzman.accent, modifier = Modifier.size(56.dp))
             Text("Holtzman needs the camera", style = IosType.title2, color = Color.White)
@@ -96,7 +96,7 @@ private fun CameraGate(startInVideo: Boolean, onCaptured: ((android.net.Uri, Str
 
 /** The camera: the picture at its true 4:3, a shutter, the other lens, RAW when the camera has it, and the probe. */
 @Composable
-private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
+private fun CameraScreen(startInVideo: Boolean, locked: Boolean, onCaptured: ((android.net.Uri, String) -> Unit)?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val controller = remember { CameraController(context) }
@@ -174,6 +174,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var quality by remember { mutableStateOf<VideoQuality?>(null) }
     var lastVideo by remember { mutableStateOf<android.net.Uri?>(null) }
     var viewerItems by remember { mutableStateOf<List<android.net.Uri>?>(null) }
+    // On the lock screen ([locked], see SecureCameraActivity) only what is shot here is shown: these are those shots, newest first.
+    val sessionShots = remember { mutableStateListOf<android.net.Uri>() }
+    val sessionVideos = remember { mutableStateListOf<android.net.Uri>() }
     var viewerStart by remember { mutableStateOf(0) }
     val videoSaver = remember { VideoSaver(context.contentResolver) }
     var pendingVideo by remember { mutableStateOf<PendingVideo?>(null) }
@@ -249,7 +252,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         if (surface == null || !resumed) { controller.close(); return@LaunchedEffect }
         // the camera configures its stream to the texture's buffer size: set it to the preview size before the session is made
         previewShape?.let { shape -> previewTexture?.setDefaultBufferSize(shape.width, shape.height) }
-        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else 1f, onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
+        // The zoom carries over a reopen: leaving the ultrawide for 2x reopens the camera (with its RAW stream back), and starting that at 1x lost the tap on 2.
+        controller.open(lens, surface, (raw || hdr || computational || dataset) && !wide, if (videoMode) null else nightExtension, if (videoMode) quality else null, computational && !wide || dataset, instant && !longCapture && computational && !dataset && !wide, if (wide) zoom else maxOf(zoom, 1f), onReady = { rawAvailable = controller.rawAvailable; zoom = controller.zoom; flashAvailable = controller.flashAvailable; zoomRange = controller.zoomMin..controller.zoomMax }, onError = { android.util.Log.w("HoltzmanCamera", "camera error (extension=$nightExtension): $it"); status = it; if (nightExtension != null) night = false })
     }
     DisposableEffect(controller) {
         // however a recording ends (stopped, or the screen was left), the file is finished or removed here
@@ -266,8 +270,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // a lens or mode change ends a lock
     LaunchedEffect(lens, videoMode, nightExtension) { if (aeAfLock) { aeAfLock = false; focusPoint = null; controller.unlock() } }
     // the thumbnail beside the shutter: the last photo (or video) taken; on opening, the newest photo the app saved before
-    LaunchedEffect(Unit) { if (last == null) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
-    LaunchedEffect(Unit) { if (lastVideo == null) withContext(Dispatchers.IO) { videoSaver.latestVideo() }?.let { if (lastVideo == null) lastVideo = it } }
+    LaunchedEffect(Unit) { if (last == null && !locked) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
+    LaunchedEffect(Unit) { if (lastVideo == null && !locked) withContext(Dispatchers.IO) { videoSaver.latestVideo() }?.let { if (lastVideo == null) lastVideo = it } }
+    LaunchedEffect(last, lastVideo) { if (locked) { last?.jpeg?.let { if (it !in sessionShots) sessionShots.add(0, it) }; lastVideo?.let { if (it !in sessionVideos) sessionVideos.add(0, it) } } }
     LaunchedEffect(last, lastVideo, videoMode) {
         val uri = if (videoMode) lastVideo else last?.jpeg
         lastThumb = if (uri == null) null else withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(160, 160), null) }.getOrNull() }
@@ -495,6 +500,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 StripItem.NIGHT -> nightAvailable
                 StripItem.HDR -> !night
                 StripItem.RAW -> !night && (rawAvailable || raw)
+                StripItem.SETTINGS -> !locked   // on the lock screen: the settings hold the developer tools and the dataset sessions, which are the owner's
                 StripItem.EXPOSURE -> !manualExposureOn   // a hand-set exposure has no compensation
                 else -> true
             }
@@ -669,9 +675,9 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 Spacer(Modifier.height(14.dp))
                 val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
-                        (if (videoMode) lastVideo else last?.jpeg)?.let { current -> scope.launch { val all = withContext(Dispatchers.IO) { if (videoMode) videoSaver.listVideos() else saver.listPhotos() }
-                            if (all.isEmpty()) { if (!CaptureContract.view(context, current, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" } else { viewerStart = all.indexOf(current).coerceAtLeast(0); viewerItems = all } } }
+                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!locked && !CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
+                        (if (videoMode) lastVideo else last?.jpeg)?.let { current -> scope.launch { val all = if (locked) (if (videoMode) sessionVideos else sessionShots).toList() else withContext(Dispatchers.IO) { if (videoMode) videoSaver.listVideos() else saver.listPhotos() }
+                            if (all.isEmpty()) { if (!locked && !CaptureContract.view(context, current, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" } else { viewerStart = all.indexOf(current).coerceAtLeast(0); viewerItems = all } } }
                     }, contentAlignment = Alignment.Center) {
                         val thumb = lastThumb
                         if (thumb != null) androidx.compose.foundation.Image(thumb.asImageBitmap(), "Last photo", Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
@@ -760,12 +766,12 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         ChooseStyleScreen(preset, { preset = it }, styleIntensity, chooseThumb, { showChooseStyle = false },
             { showChooseStyle = false; startStylesOnTexture = true; activeItem = StripItem.STYLES })
     }
-    viewerItems?.let { items -> MediaViewer(items, viewerStart, videoMode,
-        onDelete = { uri -> withContext(Dispatchers.IO) { if (videoMode) videoSaver.deleteVideo(uri) else saver.deletePhoto(uri) } },
+    viewerItems?.let { items -> MediaViewer(items, viewerStart, videoMode, restricted = locked,
+        onDelete = { uri -> withContext(Dispatchers.IO) { if (videoMode) videoSaver.deleteVideo(uri) else saver.deletePhoto(uri) }.also { ok -> if (ok) { sessionShots.remove(uri); sessionVideos.remove(uri) } } },
         onClose = {
             viewerItems = null
             // what the review button shows may have been deleted: look again
-            scope.launch { if (videoMode) lastVideo = withContext(Dispatchers.IO) { videoSaver.latestVideo() } else last = withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { Saved(it, null) } }
+            scope.launch { if (videoMode) lastVideo = if (locked) sessionVideos.firstOrNull() else withContext(Dispatchers.IO) { videoSaver.latestVideo() } else last = (if (locked) sessionShots.firstOrNull() else withContext(Dispatchers.IO) { saver.latestPhoto() })?.let { Saved(it, null) } }
         }) }   // the app's own swipeable viewer, over everything
     if (showSettings) SettingsSheet(liquid = liquidSetting, onLiquid = { liquidSetting = it }, 
         computational = burst, onComputational = { burst = it },
