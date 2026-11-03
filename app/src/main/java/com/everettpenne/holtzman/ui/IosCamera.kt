@@ -112,27 +112,42 @@ fun DotGridGlyph(color: Color, modifier: Modifier = Modifier) {
     }
 }
 
+/** The controls sheet's sections, in order: what a person reaches for most first. Items a camera does not offer are left out, and a section with none is not shown. */
+private val SHEET_GROUPS = listOf(
+    "Shoot" to listOf(StripItem.FLASH, StripItem.NIGHT, StripItem.ASPECT, StripItem.TIMER),
+    "Look" to listOf(StripItem.EXPOSURE, StripItem.STYLES, StripItem.HDR),
+    "Manual" to listOf(StripItem.SHUTTER, StripItem.ISO, StripItem.FOCUS),
+    "More" to listOf(StripItem.RAW, StripItem.SETTINGS),
+)
+
 /**
- * The controls as the iPhone shows them: a sheet the width of the screen, rounded only at the top and running to the bottom edge, with a handle over a grid of
- * three round buttons across, each with its name in capitals under it. [tile] draws what is inside a button.
+ * The controls as the iPhone shows them: a sheet the width of the screen, rounded only at the top and running to the bottom edge, with a handle over rows of
+ * round buttons, four across, each with its name in capitals under it, in sections ([SHEET_GROUPS]). [tile] draws what is inside a button.
+ * Opaque on purpose: it was 92% opaque and stood half over the picture and half over the black bar below it, so it showed as two shades with the zoom numbers
+ * ghosting through (2026-11-02). Its rows are not cut off: the old 380 dp window clipped the last row's names.
  */
 @Composable
 fun ControlsSheet(items: List<StripItem>, on: Set<StripItem>, changed: Set<StripItem>, onItem: (StripItem) -> Unit, modifier: Modifier = Modifier, tile: @Composable (StripItem, Boolean) -> Unit) {
-    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(Color(0xEB1C1C1E)).navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 16.dp)) {
-        Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 14.dp).size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .35f), CircleShape))
-        Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            items.chunked(3).forEach { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    row.forEach { item ->
-                        Column(Modifier.width(96.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            Box(Modifier.size(64.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
-                                tile(item, item in on)
-                                if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(11.dp).size(8.dp).background(CameraYellow, CircleShape))
+    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(Color(0xFF1C1C1E)).navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 16.dp)) {
+        Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 10.dp).size(width = 36.dp, height = 4.dp).background(Color.White.copy(alpha = .35f), CircleShape))
+        Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            SHEET_GROUPS.forEach { (title, members) ->
+                val shown = members.filter { it in items }
+                if (shown.isEmpty()) return@forEach
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(title.uppercase(), style = IosType.caption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp), color = Color.White.copy(alpha = .45f), modifier = Modifier.padding(start = 6.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        shown.forEach { item ->
+                            Column(Modifier.width(78.dp).clickable { onItem(item) }.semantics { contentDescription = item.label }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)), contentAlignment = Alignment.Center) {
+                                    tile(item, item in on)
+                                    if (item in changed && item !in on) Box(Modifier.align(Alignment.TopEnd).padding(10.dp).size(8.dp).background(CameraYellow, CircleShape))
+                                }
+                                Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.4.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .75f))
                             }
-                            Text(item.label.uppercase(), maxLines = 1, softWrap = false, style = IosType.caption2.copy(letterSpacing = 0.6.sp), color = if (item in on) CameraYellow else Color.White.copy(alpha = .75f))
                         }
+                        repeat(4 - shown.size) { Spacer(Modifier.width(78.dp)) }
                     }
-                    repeat(3 - row.size) { Spacer(Modifier.width(96.dp)) }
                 }
             }
         }

@@ -571,7 +571,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                         modifier = Modifier.padding(horizontal = 24.dp).background(Color.Black.copy(alpha = .7f), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) }
                 }
                 // zoom, the iPhone's way: plain numbers on the picture's lower edge; the one in use sits in a dark circle, in yellow, with a multiplication sign
-                if (activeItem == null || showControls) run {   // the zoom numbers make way for an open card, whose shutter floats where they are
+                if (activeItem == null && !showControls) run {   // the zoom numbers make way for an open card (whose shutter floats where they are) and for the controls sheet
                     val stops = zoomStops(zoomRange.start, zoomRange.endInclusive)
                     Row(Modifier.align(Alignment.BottomCenter).padding(bottom = if (videoMode) 118.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                         stops.forEach { stop ->
@@ -659,7 +659,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         }
         // ---- the controls sheet: over everything below the picture; touching outside it puts it away
         if (showControls) {
-            Box(Modifier.fillMaxSize().clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = false })
+            androidx.activity.compose.BackHandler { showControls = false }   // Back puts the sheet away; before, it left the app
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .4f)).clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = false })
             ControlsSheet(sheetItems, lit, changed, { i ->
                 when (i) {
                     StripItem.NIGHT -> night = !night; StripItem.HDR -> hdr = !hdr; StripItem.RAW -> raw = !raw
@@ -673,6 +674,7 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                     StripItem.ASPECT -> Text(when (cropRatio) { PhotoRatio.FULL -> "4:3"; PhotoRatio.SQUARE -> "1:1"; PhotoRatio.FOUR_FIVE -> "4:5"; PhotoRatio.WIDE -> "16:9" }, style = IosType.subheadline.copy(fontWeight = FontWeight.Bold), color = if (cropRatio.isFull) Color.White else CameraYellow)
                     StripItem.TIMER -> if (timer == TimerMode.OFF) Icon(Icons.Rounded.TimerOff, null, tint = Color.White, modifier = Modifier.size(27.dp)) else Text("${timer.seconds}s", style = IosType.subheadline.copy(fontWeight = FontWeight.Bold), color = CameraYellow)
                     StripItem.STYLES -> DotGridGlyph(if (styleChanged) CameraYellow else Color.White)
+                    StripItem.ISO -> Text("ISO", style = IosType.subheadline.copy(fontWeight = FontWeight.Bold), color = tint)   // the plus-minus square is Exposure's
                     else -> Icon(item.icon, null, tint = tint, modifier = Modifier.size(27.dp))
                 }
             }
