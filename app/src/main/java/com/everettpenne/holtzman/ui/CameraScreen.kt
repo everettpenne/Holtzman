@@ -174,12 +174,6 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     var quality by remember { mutableStateOf<VideoQuality?>(null) }
     var lastVideo by remember { mutableStateOf<android.net.Uri?>(null) }
     var viewerItems by remember { mutableStateOf<List<android.net.Uri>?>(null) }
-    // Opened from the lock screen (its camera button, the power button's double press) the camera is in a stranger's hands as far as the photos go: it shows no thumbnail of an
-    // older photo and the viewer holds only what was shot in this session, with no sharing. [locked] follows the keyguard while the camera is on screen.
-    val keyguard = remember { context.getSystemService(android.app.KeyguardManager::class.java) }
-    var locked by remember { mutableStateOf(keyguard?.isKeyguardLocked == true || com.everettpenne.holtzman.save.DebugFlags.on("locked")) }
-    val sessionShots = remember { mutableStateListOf<android.net.Uri>() }
-    val sessionVideos = remember { mutableStateListOf<android.net.Uri>() }
     var viewerStart by remember { mutableStateOf(0) }
     val videoSaver = remember { VideoSaver(context.contentResolver) }
     var pendingVideo by remember { mutableStateOf<PendingVideo?>(null) }
@@ -234,7 +228,6 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // the camera is open only while the screen is showing
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var resumed by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
-    LaunchedEffect(resumed) { while (resumed) { locked = keyguard?.isKeyguardLocked == true || com.everettpenne.holtzman.save.DebugFlags.on("locked"); delay(1000) } }
     DisposableEffect(lifecycle) {
         val o = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) resumed = true else if (e == Lifecycle.Event.ON_PAUSE) resumed = false }
         lifecycle.addObserver(o); onDispose { lifecycle.removeObserver(o) }
@@ -273,9 +266,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
     // a lens or mode change ends a lock
     LaunchedEffect(lens, videoMode, nightExtension) { if (aeAfLock) { aeAfLock = false; focusPoint = null; controller.unlock() } }
     // the thumbnail beside the shutter: the last photo (or video) taken; on opening, the newest photo the app saved before
-    LaunchedEffect(Unit) { if (last == null && !locked) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
-    LaunchedEffect(Unit) { if (lastVideo == null && !locked) withContext(Dispatchers.IO) { videoSaver.latestVideo() }?.let { if (lastVideo == null) lastVideo = it } }
-    LaunchedEffect(last, lastVideo) { if (locked) { last?.jpeg?.let { if (it !in sessionShots) sessionShots.add(0, it) }; lastVideo?.let { if (it !in sessionVideos) sessionVideos.add(0, it) } } }
+    LaunchedEffect(Unit) { if (last == null) withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { if (last == null) last = Saved(it, null) } }
+    LaunchedEffect(Unit) { if (lastVideo == null) withContext(Dispatchers.IO) { videoSaver.latestVideo() }?.let { if (lastVideo == null) lastVideo = it } }
     LaunchedEffect(last, lastVideo, videoMode) {
         val uri = if (videoMode) lastVideo else last?.jpeg
         lastThumb = if (uri == null) null else withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(160, 160), null) }.getOrNull() }
@@ -677,8 +669,8 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
                 Spacer(Modifier.height(14.dp))
                 val thumbShape = if (liquid) CircleShape else RoundedCornerShape(12.dp)   // iOS 26's review button is round
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!locked && !CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
-                        (if (videoMode) lastVideo else last?.jpeg)?.let { current -> scope.launch { val all = if (locked) (if (videoMode) sessionVideos else sessionShots).toList() else withContext(Dispatchers.IO) { if (videoMode) videoSaver.listVideos() else saver.listPhotos() }
+                    Box(Modifier.size(46.dp).clip(thumbShape).background(Color.White.copy(alpha = .12f)).then(if (liquid) Modifier else Modifier.border(1.5.dp, Color.White.copy(alpha = .4f), thumbShape)).combinedClickable(onLongClick = { if (!CaptureContract.showInSietch(context, android.os.Environment.getExternalStoragePublicDirectory(if (videoMode) android.os.Environment.DIRECTORY_MOVIES else android.os.Environment.DIRECTORY_PICTURES).path + "/Holtzman") && !CaptureContract.showLibrary(context, videoMode)) status = "No gallery app found" }, enabled = if (videoMode) lastVideo != null else last != null) {
+                        (if (videoMode) lastVideo else last?.jpeg)?.let { current -> scope.launch { val all = withContext(Dispatchers.IO) { if (videoMode) videoSaver.listVideos() else saver.listPhotos() }
                             if (all.isEmpty()) { if (!CaptureContract.view(context, current, if (videoMode) "video/mp4" else "image/jpeg")) status = "No gallery app found" } else { viewerStart = all.indexOf(current).coerceAtLeast(0); viewerItems = all } } }
                     }, contentAlignment = Alignment.Center) {
                         val thumb = lastThumb
@@ -768,12 +760,12 @@ private fun CameraScreen(startInVideo: Boolean, onCaptured: ((android.net.Uri, S
         ChooseStyleScreen(preset, { preset = it }, styleIntensity, chooseThumb, { showChooseStyle = false },
             { showChooseStyle = false; startStylesOnTexture = true; activeItem = StripItem.STYLES })
     }
-    viewerItems?.let { items -> MediaViewer(items, viewerStart, videoMode, restricted = locked,
-        onDelete = { uri -> withContext(Dispatchers.IO) { if (videoMode) videoSaver.deleteVideo(uri) else saver.deletePhoto(uri) }.also { ok -> if (ok) { sessionShots.remove(uri); sessionVideos.remove(uri) } } },
+    viewerItems?.let { items -> MediaViewer(items, viewerStart, videoMode,
+        onDelete = { uri -> withContext(Dispatchers.IO) { if (videoMode) videoSaver.deleteVideo(uri) else saver.deletePhoto(uri) } },
         onClose = {
             viewerItems = null
             // what the review button shows may have been deleted: look again
-            scope.launch { if (videoMode) lastVideo = if (locked) sessionVideos.firstOrNull() else withContext(Dispatchers.IO) { videoSaver.latestVideo() } else last = (if (locked) sessionShots.firstOrNull() else withContext(Dispatchers.IO) { saver.latestPhoto() })?.let { Saved(it, null) } }
+            scope.launch { if (videoMode) lastVideo = withContext(Dispatchers.IO) { videoSaver.latestVideo() } else last = withContext(Dispatchers.IO) { saver.latestPhoto() }?.let { Saved(it, null) } }
         }) }   // the app's own swipeable viewer, over everything
     if (showSettings) SettingsSheet(liquid = liquidSetting, onLiquid = { liquidSetting = it }, 
         computational = burst, onComputational = { burst = it },

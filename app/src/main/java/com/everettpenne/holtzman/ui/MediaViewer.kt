@@ -58,11 +58,11 @@ import kotlin.math.max
 /**
  * The app's own viewer for what it saved: a swipe through the photos (or the videos, in video mode) newest first, a pinch or double tap to zoom a photo, a tap to hide the
  * controls, share and "open in gallery" buttons and a delete button (after a question). An Ultra HDR photo is shown in HDR where the screen can (the window is put in HDR
- * colour mode while the viewer is open), marked "HDR". [restricted] (opened over the lock screen) leaves out sharing and the gallery. [onDelete] deletes one item and says
+ * colour mode while the viewer is open), marked "HDR". [onDelete] deletes one item and says
  * whether it did. [uris] is the media library's list when the viewer was opened, [start] the one to show first. Back closes it.
  */
 @Composable
-fun MediaViewer(uris: List<Uri>, start: Int, video: Boolean, restricted: Boolean = false, onDelete: suspend (Uri) -> Boolean, onClose: () -> Unit) {
+fun MediaViewer(uris: List<Uri>, start: Int, video: Boolean, onDelete: suspend (Uri) -> Boolean, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val items = remember { androidx.compose.runtime.mutableStateListOf<Uri>().apply { addAll(uris) } }
@@ -77,7 +77,7 @@ fun MediaViewer(uris: List<Uri>, start: Int, video: Boolean, restricted: Boolean
     val mime = if (video) "video/mp4" else "image/jpeg"
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, userScrollEnabled = !zoomed, key = { items[it].toString() }) { page ->
-            if (video) VideoPage(items[page], restricted, onTap = { chrome = !chrome })
+            if (video) VideoPage(items[page], onTap = { chrome = !chrome })
             else PhotoPage(items[page], active = pager.currentPage == page, onTap = { chrome = !chrome }, onZoomed = { zoomed = it }, onLoaded = { hdr[items[page]] = it })
         }
         val current = items.getOrNull(pager.currentPage)
@@ -92,8 +92,8 @@ fun MediaViewer(uris: List<Uri>, start: Int, video: Boolean, restricted: Boolean
                 }
             }
             Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(horizontal = 32.dp, vertical = 20.dp), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween) {
-                if (restricted) Box(Modifier.size(52.dp)) else CamCircle(52.dp, "Share", { CaptureContract.share(context, current, mime) }) { Icon(Icons.Rounded.Share, null, tint = Color.White) }
-                if (!restricted) CamCircle(52.dp, "Open in gallery", { CaptureContract.view(context, current, mime) }) { Icon(Icons.Rounded.OpenInNew, null, tint = Color.White) }
+                CamCircle(52.dp, "Share", { CaptureContract.share(context, current, mime) }) { Icon(Icons.Rounded.Share, null, tint = Color.White) }
+                CamCircle(52.dp, "Open in gallery", { CaptureContract.view(context, current, mime) }) { Icon(Icons.Rounded.OpenInNew, null, tint = Color.White) }
                 CamCircle(52.dp, "Delete", { asking = true }) { Icon(Icons.Rounded.Delete, null, tint = Color.White) }
             }
         }
@@ -158,12 +158,12 @@ private fun PhotoPage(uri: Uri, active: Boolean, onTap: () -> Unit, onZoomed: (B
 
 /** One video: its first frame with a play button, which hands the video to a player (the viewer does not play video itself). */
 @Composable
-private fun VideoPage(uri: Uri, restricted: Boolean, onTap: () -> Unit) {
+private fun VideoPage(uri: Uri, onTap: () -> Unit) {
     val context = LocalContext.current
     val frame by produceState<Bitmap?>(null, uri) { value = withContext(Dispatchers.IO) { runCatching { context.contentResolver.loadThumbnail(uri, Size(1080, 1080), null) }.getOrNull() } }
     Box(Modifier.fillMaxSize().clickable(indication = null, interactionSource = null, onClick = onTap), contentAlignment = Alignment.Center) {
         frame?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
-        Box(Modifier.size(72.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color.Black.copy(alpha = .55f)).clickable(enabled = !restricted) { CaptureContract.view(context, uri, "video/mp4") }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(72.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color.Black.copy(alpha = .55f)).clickable { CaptureContract.view(context, uri, "video/mp4") }, contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.PlayArrow, "Play", tint = Color.White, modifier = Modifier.size(40.dp))
         }
     }

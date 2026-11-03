@@ -13,14 +13,16 @@ import com.everettpenne.holtzman.ui.ShutterKeys
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        intent?.getStringExtra("dbg")?.let { com.everettpenne.holtzman.save.DebugFlags.raw = it }
+        // Debug switches come in with the launch intent (adb shell am start --es dbg ...). Only a debug build takes them: the activity is exported, so in a release build any app
+        // could otherwise turn on, say, keepraw (every raw burst kept, a few hundred MB each) and fill the phone.
+        if (BuildConfig.DEBUG) intent?.getStringExtra("dbg")?.let { com.everettpenne.holtzman.save.DebugFlags.raw = it }
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         setContent { HoltzmanRoot(startInVideo = CaptureContract.wantsVideo(intent)) }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
-        com.everettpenne.holtzman.save.DebugFlags.raw = intent.getStringExtra("dbg") ?: ""
+        if (BuildConfig.DEBUG) com.everettpenne.holtzman.save.DebugFlags.raw = intent.getStringExtra("dbg") ?: ""
     }
 
     /** The volume keys take the picture, as on a camera; the key's repeat while held is ignored so one press is one shot. */
